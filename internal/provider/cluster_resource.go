@@ -11,16 +11,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
 	"github.com/tinkerbell-community/terraform-provider-capi/internal/capi"
@@ -46,8 +47,13 @@ func (r *ClusterResource) Metadata(ctx context.Context, req resource.MetadataReq
 }
 
 func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	providerConfigNested := schema.NestedAttributeObject{
+		CustomType: NewProviderConfigType(),
+		Attributes: providerConfigSchemaAttributes(),
+	}
+
 	resp.Schema = schema.Schema{
-		Version:             1,
+		Version:             2,
 		MarkdownDescription: "Manages a Cluster API cluster using the CAPI management workflow (bootstrap -> init -> apply -> wait -> move).",
 
 		Attributes: map[string]schema.Attribute{
@@ -114,223 +120,53 @@ func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest
 				},
 			},
 
-			// --- infrastructure ---
-			"infrastructure": schema.SingleNestedAttribute{
-				MarkdownDescription: "Infrastructure provider configuration.",
+			// --- infrastructure (map of provider configs, keyed by provider name) ---
+			"infrastructure": schema.MapNestedAttribute{
+				MarkdownDescription: "Infrastructure provider configurations, keyed by provider name (e.g., `docker`, `tinkerbell`). Maps to the capi-operator Helm chart infrastructure values.",
 				Required:            true,
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.RequiresReplace(),
-				},
-				Attributes: map[string]schema.Attribute{
-					"provider": schema.StringAttribute{
-						MarkdownDescription: "Infrastructure provider name and optional version (e.g., `docker`, `tinkerbell:v0.5.4`).",
-						Required:            true,
-					},
-				},
+				NestedObject:        providerConfigNested,
 			},
 
-			// --- bootstrap ---
-			"bootstrap": schema.SingleNestedAttribute{
-				MarkdownDescription: "Bootstrap provider configuration (e.g., kubeadm, talos).",
+			// --- bootstrap (map of provider configs) ---
+			"bootstrap": schema.MapNestedAttribute{
+				MarkdownDescription: "Bootstrap provider configurations, keyed by provider name (e.g., `kubeadm`, `talos`).",
 				Optional:            true,
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.RequiresReplace(),
-				},
-				Attributes: map[string]schema.Attribute{
-					"provider": schema.StringAttribute{
-						MarkdownDescription: "Bootstrap provider name and optional version (e.g., `kubeadm:v1.12.2`, `talos:v0.6.7`).",
-						Required:            true,
-					},
-				},
+				NestedObject:        providerConfigNested,
 			},
 
-			// --- control_plane ---
-			"control_plane": schema.SingleNestedAttribute{
-				MarkdownDescription: "Control plane configuration.",
+			// --- control_plane (map of provider configs) ---
+			"control_plane": schema.MapNestedAttribute{
+				MarkdownDescription: "Control plane provider configurations, keyed by provider name (e.g., `kubeadm`, `talos`).",
+				Optional:            true,
+				NestedObject:        providerConfigNested,
+			},
+
+			// --- core (map of provider configs) ---
+			"core": schema.MapNestedAttribute{
+				MarkdownDescription: "Core CAPI provider configurations, keyed by provider name (e.g., `cluster-api`).",
+				Optional:            true,
+				NestedObject:        providerConfigNested,
+			},
+
+			// --- addon (map of provider configs) ---
+			"addon": schema.MapNestedAttribute{
+				MarkdownDescription: "Addon provider configurations, keyed by provider name (e.g., `helm`). Customizations (deployment, manager, patches) are applied natively by wrapping the clusterctl client's repository factory — the capi-operator itself is not required.",
+				Optional:            true,
+				NestedObject:        providerConfigNested,
+			},
+
+			// --- topology (machine counts, separate from provider config) ---
+			"topology": schema.SingleNestedAttribute{
+				MarkdownDescription: "Cluster topology configuration. Controls the number of control plane and worker machines.",
 				Optional:            true,
 				Attributes: map[string]schema.Attribute{
-					"provider": schema.StringAttribute{
-						MarkdownDescription: "Control plane provider name and optional version (e.g., `kubeadm:v1.12.2`, `talos:v0.6.7`).",
-						Optional:            true,
-						PlanModifiers: []planmodifier.String{
-							stringplanmodifier.RequiresReplace(),
-						},
-					},
-					"machine_count": schema.Int64Attribute{
-						MarkdownDescription: "Number of control plane machines.",
+					"control_plane_count": schema.Int64Attribute{
+						MarkdownDescription: "Number of control plane machines. Must be an odd number for HA (1, 3, 5).",
 						Optional:            true,
 					},
-				},
-			},
-
-			// --- core ---
-			"core": schema.SingleNestedAttribute{
-				MarkdownDescription: "Core CAPI provider configuration.",
-				Optional:            true,
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.RequiresReplace(),
-				},
-				Attributes: map[string]schema.Attribute{
-					"provider": schema.StringAttribute{
-						MarkdownDescription: "Core provider name and version (e.g., `cluster-api:v1.12.2`).",
-						Required:            true,
-					},
-				},
-			},
-
-			// --- workers ---
-			"workers": schema.SingleNestedAttribute{
-				MarkdownDescription: "Worker node configuration.",
-				Optional:            true,
-				Attributes: map[string]schema.Attribute{
-					"machine_count": schema.Int64Attribute{
+					"worker_count": schema.Int64Attribute{
 						MarkdownDescription: "Number of worker machines.",
 						Optional:            true,
-					},
-				},
-			},
-
-			// --- addons ---
-			"addons": schema.ListNestedAttribute{
-				MarkdownDescription: "Addon provider configurations modeled after the cluster-api-operator AddonProvider CRD (`operator.cluster.x-k8s.io/v1alpha2`). Each element installs one addon provider via `clusterctl init`. Customizations (deployment, manager, patches) are applied natively by wrapping the clusterctl client's repository factory — the operator itself is not required.",
-				Optional:            true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"provider": schema.StringAttribute{
-							MarkdownDescription: "Addon provider name and optional version (e.g., `helm:v0.2.12`).",
-							Required:            true,
-						},
-						"config_variables": schema.MapAttribute{
-							MarkdownDescription: "Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.",
-							ElementType:         types.StringType,
-							Optional:            true,
-						},
-						"secret_config_variables": schema.MapAttribute{
-							MarkdownDescription: "Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.",
-							ElementType:         types.StringType,
-							Optional:            true,
-							Sensitive:           true,
-						},
-						"fetch_config": schema.SingleNestedAttribute{
-							MarkdownDescription: "Determines how the provider fetches components and metadata. Exactly one of `url` or `oci` must be specified.",
-							Optional:            true,
-							Attributes: map[string]schema.Attribute{
-								"url": schema.StringAttribute{
-									MarkdownDescription: "URL for fetching provider components from a remote GitHub repository (e.g., `https://github.com/{owner}/{repo}/releases`).",
-									Optional:            true,
-								},
-								"oci": schema.StringAttribute{
-									MarkdownDescription: "OCI artifact reference for fetching provider components (e.g., `oci://ghcr.io/org/provider`).",
-									Optional:            true,
-								},
-							},
-						},
-						"deployment": schema.SingleNestedAttribute{
-							MarkdownDescription: "Deployment customization for the addon provider controller.",
-							Optional:            true,
-							Attributes: map[string]schema.Attribute{
-								"replicas": schema.Int64Attribute{
-									MarkdownDescription: "Number of desired pods. Defaults to 1.",
-									Optional:            true,
-								},
-								"node_selector": schema.MapAttribute{
-									MarkdownDescription: "Node selector labels for pod scheduling.",
-									ElementType:         types.StringType,
-									Optional:            true,
-								},
-								"service_account_name": schema.StringAttribute{
-									MarkdownDescription: "Service account name for the provider pod.",
-									Optional:            true,
-								},
-								"containers": schema.ListNestedAttribute{
-									MarkdownDescription: "Container overrides for the provider deployment.",
-									Optional:            true,
-									NestedObject: schema.NestedAttributeObject{
-										Attributes: map[string]schema.Attribute{
-											"name": schema.StringAttribute{
-												MarkdownDescription: "Container name. Must match an existing container in the deployment.",
-												Required:            true,
-											},
-											"image_url": schema.StringAttribute{
-												MarkdownDescription: "Container image URL override.",
-												Optional:            true,
-											},
-											"args": schema.MapAttribute{
-												MarkdownDescription: "Extra arguments passed to the container entrypoint. Explicit ManagerSpec values take precedence.",
-												ElementType:         types.StringType,
-												Optional:            true,
-											},
-											"command": schema.ListAttribute{
-												MarkdownDescription: "Override for the container entrypoint command.",
-												ElementType:         types.StringType,
-												Optional:            true,
-											},
-										},
-									},
-								},
-							},
-						},
-						"manager": schema.SingleNestedAttribute{
-							MarkdownDescription: "Controller manager configuration for the addon provider.",
-							Optional:            true,
-							Attributes: map[string]schema.Attribute{
-								"profiler_address": schema.StringAttribute{
-									MarkdownDescription: "Bind address for the pprof profiler (e.g., `localhost:6060`). Empty disables profiling.",
-									Optional:            true,
-								},
-								"max_concurrent_reconciles": schema.Int64Attribute{
-									MarkdownDescription: "Maximum number of concurrent reconciles.",
-									Optional:            true,
-								},
-								"verbosity": schema.Int64Attribute{
-									MarkdownDescription: "Log verbosity level. Defaults to 1.",
-									Optional:            true,
-								},
-								"feature_gates": schema.MapAttribute{
-									MarkdownDescription: "Provider-specific feature gates passed as `--feature-gates` to the controller manager.",
-									ElementType:         types.BoolType,
-									Optional:            true,
-								},
-								"additional_args": schema.MapAttribute{
-									MarkdownDescription: "Additional arguments passed as container args to the controller manager.",
-									ElementType:         types.StringType,
-									Optional:            true,
-								},
-							},
-						},
-						"additional_manifests": schema.StringAttribute{
-							MarkdownDescription: "Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).",
-							Optional:            true,
-						},
-						"manifest_patches": schema.ListAttribute{
-							MarkdownDescription: "JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.",
-							ElementType:         types.StringType,
-							Optional:            true,
-						},
-						"patches": schema.ListNestedAttribute{
-							MarkdownDescription: "Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`.",
-							Optional:            true,
-							NestedObject: schema.NestedAttributeObject{
-								Attributes: map[string]schema.Attribute{
-									"patch": schema.StringAttribute{
-										MarkdownDescription: "Inline YAML/JSON patch content.",
-										Optional:            true,
-									},
-									"target": schema.SingleNestedAttribute{
-										MarkdownDescription: "Target object selector for the patch.",
-										Optional:            true,
-										Attributes: map[string]schema.Attribute{
-											"group":          schema.StringAttribute{Optional: true, MarkdownDescription: "API group of the target."},
-											"version":        schema.StringAttribute{Optional: true, MarkdownDescription: "API version of the target."},
-											"kind":           schema.StringAttribute{Optional: true, MarkdownDescription: "Kind of the target."},
-											"name":           schema.StringAttribute{Optional: true, MarkdownDescription: "Name of the target."},
-											"namespace":      schema.StringAttribute{Optional: true, MarkdownDescription: "Namespace of the target."},
-											"label_selector": schema.StringAttribute{Optional: true, MarkdownDescription: "Label selector expression."},
-										},
-									},
-								},
-							},
-						},
 					},
 				},
 			},
@@ -645,9 +481,10 @@ func (r *ClusterResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-// UpgradeState migrates v0 (flat) state to v1 (nested).
+// UpgradeState migrates v0 (flat) and v1 (nested-single) state to v2 (map-based providers + topology).
 func (r *ClusterResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
 	v0Schema := clusterResourceSchemaV0()
+	v1Schema := clusterResourceSchemaV1()
 	return map[int64]resource.StateUpgrader{
 		0: {
 			PriorSchema: &v0Schema,
@@ -658,100 +495,35 @@ func (r *ClusterResource) UpgradeState(ctx context.Context) map[int64]resource.S
 					return
 				}
 
-				v1 := ClusterResourceModel{
-					Name:              v0.Name,
-					KubernetesVersion: v0.KubernetesVersion,
-					Flavor:            v0.Flavor,
-					Id:                v0.Id,
+				// First migrate v0→v1 in-memory, then v1→v2.
+				v1 := migrateV0ToV1(ctx, v0, &resp.Diagnostics)
+				if resp.Diagnostics.HasError() {
+					return
 				}
 
-				// Management
-				ns := v0.TargetNamespace
-				if ns.IsNull() {
-					ns = types.StringValue("default")
-				}
-				mgmt := ManagementModel{
-					Kubeconfig:  v0.ManagementKubeconfig,
-					SkipInit:    v0.SkipInit,
-					SelfManaged: v0.SelfManaged,
-					Namespace:   ns,
-				}
-				mgmtVal, d := types.ObjectValueFrom(ctx, managementAttrTypes(), mgmt)
-				resp.Diagnostics.Append(d...)
-				v1.Management = mgmtVal
-
-				// Infrastructure
-				infra := InfrastructureModel{Provider: v0.InfrastructureProvider}
-				infraVal, d := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), infra)
-				resp.Diagnostics.Append(d...)
-				v1.Infrastructure = infraVal
-
-				// Bootstrap
-				if !v0.BootstrapProvider.IsNull() {
-					bs := BootstrapModel{Provider: v0.BootstrapProvider}
-					bsVal, d := types.ObjectValueFrom(ctx, bootstrapAttrTypes(), bs)
-					resp.Diagnostics.Append(d...)
-					v1.Bootstrap = bsVal
-				} else {
-					v1.Bootstrap = types.ObjectNull(bootstrapAttrTypes())
+				v2 := migrateV1ToV2(ctx, v1, &resp.Diagnostics)
+				if resp.Diagnostics.HasError() {
+					return
 				}
 
-				// Control plane
-				if !v0.ControlPlaneProvider.IsNull() || !v0.ControlPlaneMachineCount.IsNull() {
-					cp := ControlPlaneModel{Provider: v0.ControlPlaneProvider, MachineCount: v0.ControlPlaneMachineCount}
-					cpVal, d := types.ObjectValueFrom(ctx, controlPlaneAttrTypes(), cp)
-					resp.Diagnostics.Append(d...)
-					v1.ControlPlane = cpVal
-				} else {
-					v1.ControlPlane = types.ObjectNull(controlPlaneAttrTypes())
+				resp.Diagnostics.Append(resp.State.Set(ctx, v2)...)
+			},
+		},
+		1: {
+			PriorSchema: &v1Schema,
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var v1 clusterResourceModelV1
+				resp.Diagnostics.Append(req.State.Get(ctx, &v1)...)
+				if resp.Diagnostics.HasError() {
+					return
 				}
 
-				// Core
-				if !v0.CoreProvider.IsNull() {
-					core := CoreModel{Provider: v0.CoreProvider}
-					coreVal, d := types.ObjectValueFrom(ctx, coreAttrTypes(), core)
-					resp.Diagnostics.Append(d...)
-					v1.Core = coreVal
-				} else {
-					v1.Core = types.ObjectNull(coreAttrTypes())
+				v2 := migrateV1ToV2(ctx, v1, &resp.Diagnostics)
+				if resp.Diagnostics.HasError() {
+					return
 				}
 
-				// Workers
-				if !v0.WorkerMachineCount.IsNull() {
-					w := WorkersModel{MachineCount: v0.WorkerMachineCount}
-					wVal, d := types.ObjectValueFrom(ctx, workersAttrTypes(), w)
-					resp.Diagnostics.Append(d...)
-					v1.Workers = wVal
-				} else {
-					v1.Workers = types.ObjectNull(workersAttrTypes())
-				}
-
-				v1.Inventory = types.ObjectNull(inventoryAttrTypes())
-
-				v1.Addons = types.ListNull(types.ObjectType{AttrTypes: addonAttrTypes()})
-
-				wait := WaitModel{Enabled: v0.WaitForReady, Timeout: types.StringNull()}
-				waitVal, d := types.ObjectValueFrom(ctx, waitAttrTypes(), wait)
-				resp.Diagnostics.Append(d...)
-				v1.Wait = waitVal
-
-				out := OutputModel{KubeconfigPath: v0.KubeconfigPath}
-				outVal, d := types.ObjectValueFrom(ctx, outputAttrTypes(), out)
-				resp.Diagnostics.Append(d...)
-				v1.Output = outVal
-
-				status := StatusModel{
-					Endpoint:         v0.Endpoint,
-					Kubeconfig:       v0.Kubeconfig,
-					CACertificate:    v0.ClusterCACertificate,
-					Description:      v0.ClusterDescription,
-					BootstrapCluster: v0.BootstrapClusterName,
-				}
-				statusVal, d := types.ObjectValueFrom(ctx, statusAttrTypes(), status)
-				resp.Diagnostics.Append(d...)
-				v1.Status = statusVal
-
-				resp.Diagnostics.Append(resp.State.Set(ctx, v1)...)
+				resp.Diagnostics.Append(resp.State.Set(ctx, v2)...)
 			},
 		},
 	}
@@ -760,48 +532,49 @@ func (r *ClusterResource) UpgradeState(ctx context.Context) map[int64]resource.S
 // --- Validation ---
 
 func (r *ClusterResource) validateLifecycleConfig(ctx context.Context, data *ClusterResourceModel, diags *diag.Diagnostics) {
-	infra, d := extractInfrastructure(ctx, data)
+	infraProviders, d := extractProviderMap(ctx, data.Infrastructure)
 	diags.Append(d...)
-	if diags.HasError() || infra == nil {
+	if diags.HasError() || len(infraProviders) == 0 {
 		return
 	}
-
-	provider := strings.Split(infra.Provider.ValueString(), ":")[0]
-	provider = strings.ToLower(provider)
 
 	supportedProviders := map[string]struct{}{
 		"aws": {}, "azure": {}, "docker": {}, "openstack": {}, "tinkerbell": {}, "vsphere": {},
 	}
 
-	if _, ok := supportedProviders[provider]; !ok {
-		diags.AddError(
-			"Unsupported infrastructure provider",
-			fmt.Sprintf("infrastructure.provider %q is not supported. Supported: aws, azure, docker, openstack, tinkerbell, vsphere", provider),
-		)
+	for providerName := range infraProviders {
+		name := strings.ToLower(providerName)
+		if _, ok := supportedProviders[name]; !ok {
+			diags.AddError(
+				"Unsupported infrastructure provider",
+				fmt.Sprintf("infrastructure provider %q is not supported. Supported: aws, azure, docker, openstack, tinkerbell, vsphere", providerName),
+			)
+		}
 	}
 
-	if provider == "tinkerbell" {
+	// Tinkerbell-specific validation
+	if _, hasTinkerbell := infraProviders["tinkerbell"]; hasTinkerbell {
 		mgmt, d := extractManagement(ctx, data)
 		diags.Append(d...)
 		if mgmt == nil || mgmt.SelfManaged.IsNull() || !mgmt.SelfManaged.ValueBool() {
 			diags.AddError("Invalid Tinkerbell configuration", "Tinkerbell clusters must have management.self_managed = true.")
 		}
 
-		bs, d := extractBootstrap(ctx, data)
+		bsProviders, d := extractProviderMap(ctx, data.Bootstrap)
 		diags.Append(d...)
-		if bs != nil && !bs.Provider.IsNull() && bs.Provider.ValueString() != "" {
-			bsName := strings.Split(bs.Provider.ValueString(), ":")[0]
+		for bsName := range bsProviders {
 			if n := strings.ToLower(bsName); n != "kubeadm" && n != "talos" {
-				diags.AddError("Invalid bootstrap provider for Tinkerbell", "Tinkerbell supports bootstrap.provider = \"kubeadm\" or \"talos\".")
+				diags.AddError("Invalid bootstrap provider for Tinkerbell",
+					fmt.Sprintf("Tinkerbell supports bootstrap providers \"kubeadm\" or \"talos\", got %q.", bsName))
 			}
 		}
 
-		cp, d := extractControlPlane(ctx, data)
+		cpProviders, d := extractProviderMap(ctx, data.ControlPlane)
 		diags.Append(d...)
-		if cp != nil && !cp.Provider.IsNull() && cp.Provider.ValueString() != "" {
-			cpName := strings.Split(cp.Provider.ValueString(), ":")[0]
+		for cpName := range cpProviders {
 			if n := strings.ToLower(cpName); n != "kubeadm" && n != "talos" {
-				diags.AddError("Invalid control plane provider for Tinkerbell", "Tinkerbell supports control_plane.provider = \"kubeadm\" or \"talos\".")
+				diags.AddError("Invalid control plane provider for Tinkerbell",
+					fmt.Sprintf("Tinkerbell supports control plane providers \"kubeadm\" or \"talos\", got %q.", cpName))
 			}
 		}
 	}
@@ -811,21 +584,18 @@ func (r *ClusterResource) validateLifecycleConfig(ctx context.Context, data *Clu
 	diags.Append(d...)
 	if inv != nil {
 		var cpCount, workerCount int64
-		cp, d := extractControlPlane(ctx, data)
+		topo, d := extractTopology(ctx, data)
 		diags.Append(d...)
-		if cp != nil && !cp.MachineCount.IsNull() {
-			cpCount = cp.MachineCount.ValueInt64()
-		}
-		w, d := extractWorkers(ctx, data)
-		diags.Append(d...)
-		if w != nil && !w.MachineCount.IsNull() {
-			workerCount = w.MachineCount.ValueInt64()
+		if topo != nil {
+			if !topo.ControlPlaneCount.IsNull() {
+				cpCount = topo.ControlPlaneCount.ValueInt64()
+			}
+			if !topo.WorkerCount.IsNull() {
+				workerCount = topo.WorkerCount.ValueInt64()
+			}
 		}
 		validateInventory(ctx, inv, cpCount, workerCount, diags)
 	}
-
-	// Validate addons
-	validateAddons(ctx, data, diags)
 }
 
 func (r *ClusterResource) resolveManagementKubeconfig(ctx context.Context, plan *ClusterResourceModel, state *ClusterResourceModel) string {
@@ -972,4 +742,521 @@ func clusterResourceSchemaV0() schema.Schema {
 			"bootstrap_cluster_name":      schema.StringAttribute{Computed: true},
 		},
 	}
+}
+
+// --- v1 Schema (nested SingleNestedAttribute providers) for state migration ---
+
+type clusterResourceModelV1 struct {
+	Name              types.String `tfsdk:"name"`
+	KubernetesVersion types.String `tfsdk:"kubernetes_version"`
+	Flavor            types.String `tfsdk:"flavor"`
+	Id                types.String `tfsdk:"id"`
+
+	Management     types.Object `tfsdk:"management"`
+	Infrastructure types.Object `tfsdk:"infrastructure"`
+	Bootstrap      types.Object `tfsdk:"bootstrap"`
+	ControlPlane   types.Object `tfsdk:"control_plane"`
+	Core           types.Object `tfsdk:"core"`
+	Workers        types.Object `tfsdk:"workers"`
+	Addons         types.List   `tfsdk:"addons"`
+	Inventory      types.Object `tfsdk:"inventory"`
+	Wait           types.Object `tfsdk:"wait"`
+	Output         types.Object `tfsdk:"output"`
+	Status         types.Object `tfsdk:"status"`
+}
+
+func clusterResourceSchemaV1() schema.Schema {
+	return schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"name":               schema.StringAttribute{Required: true},
+			"kubernetes_version": schema.StringAttribute{Optional: true},
+			"flavor":             schema.StringAttribute{Optional: true},
+			"id":                 schema.StringAttribute{Computed: true},
+			"management": schema.SingleNestedAttribute{
+				Optional: true, Computed: true,
+				Attributes: map[string]schema.Attribute{
+					"kubeconfig":   schema.StringAttribute{Optional: true},
+					"skip_init":    schema.BoolAttribute{Optional: true, Computed: true},
+					"self_managed": schema.BoolAttribute{Optional: true, Computed: true},
+					"namespace":    schema.StringAttribute{Optional: true, Computed: true},
+				},
+			},
+			"infrastructure": schema.SingleNestedAttribute{
+				Required: true,
+				Attributes: map[string]schema.Attribute{
+					"provider": schema.StringAttribute{Required: true},
+				},
+			},
+			"bootstrap": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"provider": schema.StringAttribute{Required: true},
+				},
+			},
+			"control_plane": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"provider":      schema.StringAttribute{Optional: true},
+					"machine_count": schema.Int64Attribute{Optional: true},
+				},
+			},
+			"core": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"provider": schema.StringAttribute{Required: true},
+				},
+			},
+			"workers": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"machine_count": schema.Int64Attribute{Optional: true},
+				},
+			},
+			"addons": schema.ListNestedAttribute{
+				Optional: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"provider":                schema.StringAttribute{Required: true},
+						"config_variables":        schema.MapAttribute{ElementType: types.StringType, Optional: true},
+						"secret_config_variables": schema.MapAttribute{ElementType: types.StringType, Optional: true, Sensitive: true},
+						"fetch_config": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"url": schema.StringAttribute{Optional: true},
+								"oci": schema.StringAttribute{Optional: true},
+							},
+						},
+						"deployment": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"replicas":             schema.Int64Attribute{Optional: true},
+								"node_selector":        schema.MapAttribute{ElementType: types.StringType, Optional: true},
+								"service_account_name": schema.StringAttribute{Optional: true},
+								"containers": schema.ListNestedAttribute{
+									Optional: true,
+									NestedObject: schema.NestedAttributeObject{
+										Attributes: map[string]schema.Attribute{
+											"name":      schema.StringAttribute{Required: true},
+											"image_url": schema.StringAttribute{Optional: true},
+											"args":      schema.MapAttribute{ElementType: types.StringType, Optional: true},
+											"command":   schema.ListAttribute{ElementType: types.StringType, Optional: true},
+										},
+									},
+								},
+							},
+						},
+						"manager": schema.SingleNestedAttribute{
+							Optional: true,
+							Attributes: map[string]schema.Attribute{
+								"profiler_address":          schema.StringAttribute{Optional: true},
+								"max_concurrent_reconciles": schema.Int64Attribute{Optional: true},
+								"verbosity":                 schema.Int64Attribute{Optional: true},
+								"feature_gates":             schema.MapAttribute{ElementType: types.BoolType, Optional: true},
+								"additional_args":           schema.MapAttribute{ElementType: types.StringType, Optional: true},
+							},
+						},
+						"additional_manifests": schema.StringAttribute{Optional: true},
+						"manifest_patches":     schema.ListAttribute{ElementType: types.StringType, Optional: true},
+						"patches": schema.ListNestedAttribute{
+							Optional: true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"patch": schema.StringAttribute{Optional: true},
+									"target": schema.SingleNestedAttribute{
+										Optional: true,
+										Attributes: map[string]schema.Attribute{
+											"group": schema.StringAttribute{Optional: true}, "version": schema.StringAttribute{Optional: true},
+											"kind": schema.StringAttribute{Optional: true}, "name": schema.StringAttribute{Optional: true},
+											"namespace": schema.StringAttribute{Optional: true}, "label_selector": schema.StringAttribute{Optional: true},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"inventory": schema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"source": schema.StringAttribute{Optional: true},
+					"machine": schema.ListNestedAttribute{
+						Optional: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"hostname": schema.StringAttribute{Required: true},
+								"network": schema.SingleNestedAttribute{
+									Required: true,
+									Attributes: map[string]schema.Attribute{
+										"ip_address": schema.StringAttribute{Required: true}, "netmask": schema.StringAttribute{Required: true},
+										"gateway": schema.StringAttribute{Required: true}, "mac_address": schema.StringAttribute{Required: true},
+										"nameservers": schema.ListAttribute{Optional: true, ElementType: types.StringType},
+										"vlan_id":     schema.StringAttribute{Optional: true},
+									},
+								},
+								"disk": schema.SingleNestedAttribute{
+									Optional:   true,
+									Attributes: map[string]schema.Attribute{"device": schema.StringAttribute{Required: true}},
+								},
+								"bmc": schema.SingleNestedAttribute{
+									Optional: true,
+									Attributes: map[string]schema.Attribute{
+										"address": schema.StringAttribute{Required: true}, "username": schema.StringAttribute{Required: true},
+										"password": schema.StringAttribute{Required: true, Sensitive: true},
+									},
+								},
+								"labels": schema.MapAttribute{Optional: true, ElementType: types.StringType},
+							},
+						},
+					},
+				},
+			},
+			"wait": schema.SingleNestedAttribute{
+				Optional: true, Computed: true,
+				Attributes: map[string]schema.Attribute{
+					"enabled": schema.BoolAttribute{Optional: true, Computed: true},
+					"timeout": schema.StringAttribute{Optional: true, Computed: true},
+				},
+			},
+			"output": schema.SingleNestedAttribute{
+				Optional: true, Computed: true,
+				Attributes: map[string]schema.Attribute{
+					"kubeconfig_path": schema.StringAttribute{Optional: true, Computed: true},
+				},
+			},
+			"status": schema.SingleNestedAttribute{
+				Computed: true,
+				Attributes: map[string]schema.Attribute{
+					"endpoint":          schema.StringAttribute{Computed: true},
+					"kubeconfig":        schema.StringAttribute{Computed: true, Sensitive: true},
+					"ca_certificate":    schema.StringAttribute{Computed: true, Sensitive: true},
+					"description":       schema.StringAttribute{Computed: true},
+					"bootstrap_cluster": schema.StringAttribute{Computed: true},
+				},
+			},
+		},
+	}
+}
+
+// -- Migration helpers --
+
+// migrateV0ToV1 converts flat v0 state to the nested v1 intermediate model.
+func migrateV0ToV1(ctx context.Context, v0 clusterResourceModelV0, diags *diag.Diagnostics) clusterResourceModelV1 {
+	v1 := clusterResourceModelV1{
+		Name:              v0.Name,
+		KubernetesVersion: v0.KubernetesVersion,
+		Flavor:            v0.Flavor,
+		Id:                v0.Id,
+	}
+
+	ns := v0.TargetNamespace
+	if ns.IsNull() {
+		ns = types.StringValue("default")
+	}
+	mgmt := ManagementModel{Kubeconfig: v0.ManagementKubeconfig, SkipInit: v0.SkipInit, SelfManaged: v0.SelfManaged, Namespace: ns}
+	mgmtVal, d := types.ObjectValueFrom(ctx, managementAttrTypes(), mgmt)
+	diags.Append(d...)
+	v1.Management = mgmtVal
+
+	// Infrastructure as SingleNestedAttribute with "provider" key
+	v1InfraAttrTypes := map[string]attr.Type{"provider": types.StringType}
+	infraObj, d := types.ObjectValueFrom(ctx, v1InfraAttrTypes, map[string]attr.Value{"provider": v0.InfrastructureProvider})
+	diags.Append(d...)
+	v1.Infrastructure = infraObj
+
+	// Bootstrap
+	v1BsAttrTypes := map[string]attr.Type{"provider": types.StringType}
+	if !v0.BootstrapProvider.IsNull() {
+		bsObj, d := types.ObjectValueFrom(ctx, v1BsAttrTypes, map[string]attr.Value{"provider": v0.BootstrapProvider})
+		diags.Append(d...)
+		v1.Bootstrap = bsObj
+	} else {
+		v1.Bootstrap = types.ObjectNull(v1BsAttrTypes)
+	}
+
+	// Control plane
+	v1CpAttrTypes := map[string]attr.Type{"provider": types.StringType, "machine_count": types.Int64Type}
+	if !v0.ControlPlaneProvider.IsNull() || !v0.ControlPlaneMachineCount.IsNull() {
+		cpAttrs := map[string]attr.Value{
+			"provider":      v0.ControlPlaneProvider,
+			"machine_count": v0.ControlPlaneMachineCount,
+		}
+		cpObj, d := types.ObjectValueFrom(ctx, v1CpAttrTypes, cpAttrs)
+		diags.Append(d...)
+		v1.ControlPlane = cpObj
+	} else {
+		v1.ControlPlane = types.ObjectNull(v1CpAttrTypes)
+	}
+
+	// Core
+	v1CoreAttrTypes := map[string]attr.Type{"provider": types.StringType}
+	if !v0.CoreProvider.IsNull() {
+		coreObj, d := types.ObjectValueFrom(ctx, v1CoreAttrTypes, map[string]attr.Value{"provider": v0.CoreProvider})
+		diags.Append(d...)
+		v1.Core = coreObj
+	} else {
+		v1.Core = types.ObjectNull(v1CoreAttrTypes)
+	}
+
+	// Workers
+	v1WorkersAttrTypes := map[string]attr.Type{"machine_count": types.Int64Type}
+	if !v0.WorkerMachineCount.IsNull() {
+		wObj, d := types.ObjectValueFrom(ctx, v1WorkersAttrTypes, map[string]attr.Value{"machine_count": v0.WorkerMachineCount})
+		diags.Append(d...)
+		v1.Workers = wObj
+	} else {
+		v1.Workers = types.ObjectNull(v1WorkersAttrTypes)
+	}
+
+	v1.Inventory = types.ObjectNull(inventoryAttrTypes())
+	v1.Addons = types.ListNull(types.ObjectType{AttrTypes: v1AddonAttrTypes()})
+
+	wait := WaitModel{Enabled: v0.WaitForReady, Timeout: types.StringNull()}
+	waitVal, d := types.ObjectValueFrom(ctx, waitAttrTypes(), wait)
+	diags.Append(d...)
+	v1.Wait = waitVal
+
+	out := OutputModel{KubeconfigPath: v0.KubeconfigPath}
+	outVal, d := types.ObjectValueFrom(ctx, outputAttrTypes(), out)
+	diags.Append(d...)
+	v1.Output = outVal
+
+	status := StatusModel{
+		Endpoint: v0.Endpoint, Kubeconfig: v0.Kubeconfig,
+		CACertificate: v0.ClusterCACertificate, Description: v0.ClusterDescription,
+		BootstrapCluster: v0.BootstrapClusterName,
+	}
+	statusVal, d := types.ObjectValueFrom(ctx, statusAttrTypes(), status)
+	diags.Append(d...)
+	v1.Status = statusVal
+
+	return v1
+}
+
+// v1AddonAttrTypes returns the attr types for the v1 addons list element.
+func v1AddonAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"provider":                types.StringType,
+		"config_variables":        types.MapType{ElemType: types.StringType},
+		"secret_config_variables": types.MapType{ElemType: types.StringType},
+		"fetch_config":            types.ObjectType{AttrTypes: fetchConfigAttrTypes()},
+		"deployment":              types.ObjectType{AttrTypes: deploymentAttrTypes()},
+		"manager":                 types.ObjectType{AttrTypes: managerAttrTypes()},
+		"additional_manifests":    types.StringType,
+		"manifest_patches":        types.ListType{ElemType: types.StringType},
+		"patches":                 types.ListType{ElemType: types.ObjectType{AttrTypes: patchAttrTypes()}},
+	}
+}
+
+// migrateV1ToV2 converts the v1 nested-single-attribute model to the v2
+// map-based provider + topology model.
+func migrateV1ToV2(ctx context.Context, v1 clusterResourceModelV1, diags *diag.Diagnostics) ClusterResourceModel {
+	v2 := ClusterResourceModel{
+		Name:              v1.Name,
+		KubernetesVersion: v1.KubernetesVersion,
+		Flavor:            v1.Flavor,
+		Id:                v1.Id,
+		Management:        v1.Management,
+		Inventory:         v1.Inventory,
+		Wait:              v1.Wait,
+		Output:            v1.Output,
+		Status:            v1.Status,
+	}
+
+	providerMapElemType := NewProviderConfigType()
+
+	// Infrastructure: SingleNested{provider: "docker:v1.2.3"} → Map{"docker": {version: "v1.2.3"}}
+	v2.Infrastructure = migrateProviderObjectToMap(ctx, v1.Infrastructure, "provider", providerMapElemType, diags)
+
+	// Bootstrap
+	v2.Bootstrap = migrateProviderObjectToMap(ctx, v1.Bootstrap, "provider", providerMapElemType, diags)
+
+	// Control plane — has both "provider" and "machine_count"
+	v2.ControlPlane = migrateProviderObjectToMap(ctx, v1.ControlPlane, "provider", providerMapElemType, diags)
+
+	// Core
+	v2.Core = migrateProviderObjectToMap(ctx, v1.Core, "provider", providerMapElemType, diags)
+
+	// Addons (list) → Map
+	v2.Addon = migrateAddonsListToMap(ctx, v1.Addons, providerMapElemType, diags)
+
+	// Topology: extract machine_count from v1 control_plane and workers
+	var cpCount, workerCount types.Int64
+	cpCount = types.Int64Null()
+	workerCount = types.Int64Null()
+
+	if !v1.ControlPlane.IsNull() && !v1.ControlPlane.IsUnknown() {
+		cpAttrs := v1.ControlPlane.Attributes()
+		if mc, ok := cpAttrs["machine_count"]; ok {
+			if intVal, isInt := mc.(basetypes.Int64Value); isInt && !intVal.IsNull() {
+				cpCount = intVal
+			}
+		}
+	}
+	if !v1.Workers.IsNull() && !v1.Workers.IsUnknown() {
+		wAttrs := v1.Workers.Attributes()
+		if mc, ok := wAttrs["machine_count"]; ok {
+			if intVal, isInt := mc.(basetypes.Int64Value); isInt && !intVal.IsNull() {
+				workerCount = intVal
+			}
+		}
+	}
+
+	if !cpCount.IsNull() || !workerCount.IsNull() {
+		topo := TopologyModel{ControlPlaneCount: cpCount, WorkerCount: workerCount}
+		topoVal, d := types.ObjectValueFrom(ctx, topologyAttrTypes(), topo)
+		diags.Append(d...)
+		v2.Topology = topoVal
+	} else {
+		v2.Topology = types.ObjectNull(topologyAttrTypes())
+	}
+
+	return v2
+}
+
+// migrateProviderObjectToMap converts a v1 SingleNestedAttribute with a
+// "provider" field (e.g., {provider: "docker:v1.2.3"}) to a v2
+// MapNestedAttribute (e.g., {"docker": {version: "v1.2.3"}}).
+func migrateProviderObjectToMap(ctx context.Context, obj types.Object, providerKey string, elemType ProviderConfigType, diags *diag.Diagnostics) types.Map {
+	if obj.IsNull() || obj.IsUnknown() {
+		return types.MapNull(elemType)
+	}
+
+	attrs := obj.Attributes()
+	providerVal, ok := attrs[providerKey]
+	if !ok {
+		return types.MapNull(elemType)
+	}
+	strVal, isStr := providerVal.(basetypes.StringValue)
+	if !isStr || strVal.IsNull() || strVal.ValueString() == "" {
+		return types.MapNull(elemType)
+	}
+
+	providerStr := strVal.ValueString()
+	name, version := parseProviderNameVersion(providerStr)
+
+	model := ProviderConfigModel{
+		Version:               stringOrNull(version),
+		Namespace:             types.StringNull(),
+		ConfigVariables:       types.MapNull(types.StringType),
+		SecretConfigVariables: types.MapNull(types.StringType),
+		FetchConfig:           types.ObjectNull(fetchConfigAttrTypes()),
+		Deployment:            types.ObjectNull(deploymentAttrTypes()),
+		Manager:               types.ObjectNull(managerAttrTypes()),
+		AdditionalManifests:   types.StringNull(),
+		ManifestPatches:       types.ListNull(types.StringType),
+		Patches:               types.ListNull(types.ObjectType{AttrTypes: patchAttrTypes()}),
+	}
+
+	elemVal, d := NewProviderConfigValueFrom(ctx, model)
+	diags.Append(d...)
+
+	mapVal, d := types.MapValueFrom(ctx, elemType, map[string]ProviderConfigValue{name: elemVal})
+	diags.Append(d...)
+	return mapVal
+}
+
+// migrateAddonsListToMap converts a v1 addons list to a v2 addon map.
+func migrateAddonsListToMap(ctx context.Context, addons types.List, elemType ProviderConfigType, diags *diag.Diagnostics) types.Map {
+	if addons.IsNull() || addons.IsUnknown() {
+		return types.MapNull(elemType)
+	}
+
+	elements := addons.Elements()
+	if len(elements) == 0 {
+		return types.MapNull(elemType)
+	}
+
+	result := make(map[string]ProviderConfigValue)
+	for _, elem := range elements {
+		objVal, ok := elem.(basetypes.ObjectValue)
+		if !ok || objVal.IsNull() {
+			continue
+		}
+		attrs := objVal.Attributes()
+		providerVal, ok := attrs["provider"]
+		if !ok {
+			continue
+		}
+		strVal, isStr := providerVal.(basetypes.StringValue)
+		if !isStr || strVal.IsNull() {
+			continue
+		}
+
+		providerStr := strVal.ValueString()
+		name, version := parseProviderNameVersion(providerStr)
+
+		// Transfer customization fields from v1 addon to v2 ProviderConfigModel
+		model := ProviderConfigModel{
+			Version:               stringOrNull(version),
+			Namespace:             types.StringNull(),
+			AdditionalManifests:   types.StringNull(),
+			ConfigVariables:       types.MapNull(types.StringType),
+			SecretConfigVariables: types.MapNull(types.StringType),
+			FetchConfig:           types.ObjectNull(fetchConfigAttrTypes()),
+			Deployment:            types.ObjectNull(deploymentAttrTypes()),
+			Manager:               types.ObjectNull(managerAttrTypes()),
+			ManifestPatches:       types.ListNull(types.StringType),
+			Patches:               types.ListNull(types.ObjectType{AttrTypes: patchAttrTypes()}),
+		}
+
+		// Copy over non-null fields from the v1 addon object
+		if cv, ok := attrs["config_variables"]; ok {
+			if mv, isMap := cv.(basetypes.MapValue); isMap && !mv.IsNull() {
+				model.ConfigVariables = mv
+			}
+		}
+		if scv, ok := attrs["secret_config_variables"]; ok {
+			if mv, isMap := scv.(basetypes.MapValue); isMap && !mv.IsNull() {
+				model.SecretConfigVariables = mv
+			}
+		}
+		if fc, ok := attrs["fetch_config"]; ok {
+			if ov, isObj := fc.(basetypes.ObjectValue); isObj && !ov.IsNull() {
+				model.FetchConfig = ov
+			}
+		}
+		if dep, ok := attrs["deployment"]; ok {
+			if ov, isObj := dep.(basetypes.ObjectValue); isObj && !ov.IsNull() {
+				model.Deployment = ov
+			}
+		}
+		if mgr, ok := attrs["manager"]; ok {
+			if ov, isObj := mgr.(basetypes.ObjectValue); isObj && !ov.IsNull() {
+				model.Manager = ov
+			}
+		}
+		if am, ok := attrs["additional_manifests"]; ok {
+			if sv, isStr := am.(basetypes.StringValue); isStr && !sv.IsNull() {
+				model.AdditionalManifests = sv
+			}
+		}
+		if mp, ok := attrs["manifest_patches"]; ok {
+			if lv, isList := mp.(basetypes.ListValue); isList && !lv.IsNull() {
+				model.ManifestPatches = lv
+			}
+		}
+		if p, ok := attrs["patches"]; ok {
+			if lv, isList := p.(basetypes.ListValue); isList && !lv.IsNull() {
+				model.Patches = lv
+			}
+		}
+
+		elemVal, d := NewProviderConfigValueFrom(ctx, model)
+		diags.Append(d...)
+		result[name] = elemVal
+	}
+
+	mapVal, d := types.MapValueFrom(ctx, elemType, result)
+	diags.Append(d...)
+	return mapVal
+}
+
+// parseProviderNameVersion splits "name:version" into (name, version).
+func parseProviderNameVersion(s string) (string, string) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return parts[0], ""
 }

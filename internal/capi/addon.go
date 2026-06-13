@@ -23,32 +23,32 @@ import (
 )
 
 // BuildComponentsAlterFn creates a ComponentsAlterFn that applies
-// capi-operator-style customizations from an AddonConfig to provider
+// capi-operator-style customizations from a ProviderConfig to provider
 // component objects. This mirrors the operator's customizeObjectsFn +
 // applyPatches pipeline, implemented natively without operator dependency.
-func BuildComponentsAlterFn(addon AddonConfig) repository.ComponentsAlterFn {
+func BuildComponentsAlterFn(cfg ProviderConfig) repository.ComponentsAlterFn {
 	return func(objs []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
 		var err error
 
 		// 1. Apply deployment customizations (mirrors operator's customizeObjectsFn).
-		if addon.Deployment != nil {
-			objs, err = customizeDeployment(objs, addon.Deployment)
+		if cfg.Deployment != nil {
+			objs, err = customizeDeployment(objs, cfg.Deployment)
 			if err != nil {
 				return nil, fmt.Errorf("customizing deployment: %w", err)
 			}
 		}
 
 		// 2. Apply manager customizations (mirrors operator's manager arg injection).
-		if addon.Manager != nil {
-			objs, err = customizeManager(objs, addon.Manager)
+		if cfg.Manager != nil {
+			objs, err = customizeManager(objs, cfg.Manager)
 			if err != nil {
 				return nil, fmt.Errorf("customizing manager: %w", err)
 			}
 		}
 
 		// 3. Apply manifest patches — RFC 7396 merge patches (mirrors operator's applyPatches for manifestPatches).
-		if len(addon.ManifestPatches) > 0 {
-			objs, err = applyManifestPatches(objs, addon.ManifestPatches)
+		if len(cfg.ManifestPatches) > 0 {
+			objs, err = applyManifestPatches(objs, cfg.ManifestPatches)
 			if err != nil {
 				return nil, fmt.Errorf("applying manifest patches: %w", err)
 			}
@@ -56,16 +56,16 @@ func BuildComponentsAlterFn(addon AddonConfig) repository.ComponentsAlterFn {
 
 		// 4. Apply targeted patches — strategic merge / RFC6902 with selectors
 		// (mirrors operator's applyPatches for patches).
-		if len(addon.Patches) > 0 {
-			objs, err = applyTargetedPatches(objs, addon.Patches)
+		if len(cfg.Patches) > 0 {
+			objs, err = applyTargetedPatches(objs, cfg.Patches)
 			if err != nil {
 				return nil, fmt.Errorf("applying targeted patches: %w", err)
 			}
 		}
 
 		// 5. Append additional manifests.
-		if addon.AdditionalManifests != "" {
-			extra, parseErr := parseMultiDocYAML([]byte(addon.AdditionalManifests))
+		if cfg.AdditionalManifests != "" {
+			extra, parseErr := parseMultiDocYAML([]byte(cfg.AdditionalManifests))
 			if parseErr != nil {
 				return nil, fmt.Errorf("parsing additional manifests: %w", parseErr)
 			}
@@ -472,19 +472,19 @@ func (c *customizingComponentsClient) Get(ctx context.Context, options repositor
 
 // NewCustomizingRepoFactory creates a RepositoryClientFactory that wraps the
 // default repository client with provider-specific customizations.
-// For providers with matching AddonConfig entries, it:
+// For providers with matching ProviderConfig entries, it:
 //  1. Injects a custom Processor that adds ConfigVariables/SecretConfigVariables
 //  2. Wraps the ComponentsClient to apply deployment/manager/patch customizations
 //
 // Non-customized providers pass through to the default factory unchanged.
-func NewCustomizingRepoFactory(configClient config.Client, customizations map[string]AddonConfig) clusterctlclient.RepositoryClientFactory {
+func NewCustomizingRepoFactory(configClient config.Client, customizations map[string]*ProviderConfig) clusterctlclient.RepositoryClientFactory {
 	return func(ctx context.Context, input clusterctlclient.RepositoryClientFactoryInput) (repository.Client, error) {
-		addon, hasCustomization := customizations[input.Provider.Name()]
+		cfg, hasCustomization := customizations[input.Provider.Name()]
 
 		var repoOpts []repository.Option
-		if hasCustomization && (len(addon.ConfigVariables) > 0 || len(addon.SecretConfigVariables) > 0) {
+		if hasCustomization && (len(cfg.ConfigVariables) > 0 || len(cfg.SecretConfigVariables) > 0) {
 			repoOpts = append(repoOpts, repository.InjectYamlProcessor(
-				newCustomProcessor(addon.ConfigVariables, addon.SecretConfigVariables),
+				newCustomProcessor(cfg.ConfigVariables, cfg.SecretConfigVariables),
 			))
 		}
 
@@ -493,13 +493,13 @@ func NewCustomizingRepoFactory(configClient config.Client, customizations map[st
 			return nil, err
 		}
 
-		needsAlter := hasCustomization && (addon.Deployment != nil || addon.Manager != nil ||
-			len(addon.ManifestPatches) > 0 || len(addon.Patches) > 0 || addon.AdditionalManifests != "")
+		needsAlter := hasCustomization && (cfg.Deployment != nil || cfg.Manager != nil ||
+			len(cfg.ManifestPatches) > 0 || len(cfg.Patches) > 0 || cfg.AdditionalManifests != "")
 
 		if needsAlter {
 			return &customizingRepoClient{
 				Client:  repoClient,
-				alterFn: BuildComponentsAlterFn(addon),
+				alterFn: BuildComponentsAlterFn(*cfg),
 			}, nil
 		}
 
@@ -507,35 +507,24 @@ func NewCustomizingRepoFactory(configClient config.Client, customizations map[st
 	}
 }
 
-// AddonProviderStrings returns all addon provider strings for clusterctl init.
-func AddonProviderStrings(addons []AddonConfig) []string {
-	result := make([]string, 0, len(addons))
-	for _, a := range addons {
-		result = append(result, a.Provider)
+// ProviderStrings returns clusterctl-compatible "name:version" strings
+// from a provider config map.
+func ProviderStrings(providers map[string]*ProviderConfig) []string {
+	result := make([]string, 0, len(providers))
+	for name, cfg := range providers {
+		result = append(result, ProviderString(name, cfg))
 	}
 	return result
 }
 
-// CustomizedAddons returns a map of provider name → AddonConfig for addons
-// that have customizations beyond the basic name:version.
-func CustomizedAddons(addons []AddonConfig) map[string]AddonConfig {
-	result := make(map[string]AddonConfig)
-	for _, a := range addons {
-		if a.HasCustomizations() {
-			name, _ := parseProviderNameVersion(a.Provider)
-			result[name] = a
+// CustomizedProviders returns a map of provider name → *ProviderConfig for
+// providers that have customizations beyond basic name:version.
+func CustomizedProviders(providers map[string]*ProviderConfig) map[string]*ProviderConfig {
+	result := make(map[string]*ProviderConfig)
+	for name, cfg := range providers {
+		if cfg.HasCustomizations() {
+			result[name] = cfg
 		}
 	}
 	return result
-}
-
-// parseProviderNameVersion splits "name:version" into name and version.
-func parseProviderNameVersion(provider string) (string, string) {
-	parts := strings.SplitN(provider, ":", 2)
-	name := strings.TrimSpace(parts[0])
-	version := ""
-	if len(parts) == 2 {
-		version = strings.TrimSpace(parts[1])
-	}
-	return name, version
 }

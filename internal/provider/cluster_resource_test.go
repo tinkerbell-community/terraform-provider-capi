@@ -19,7 +19,7 @@ func TestAccClusterResource(t *testing.T) {
 				Config: testAccClusterResourceConfig("test-cluster"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("capi_cluster.test", "name", "test-cluster"),
-					resource.TestCheckResourceAttr("capi_cluster.test", "infrastructure.provider", "docker"),
+					resource.TestCheckResourceAttr("capi_cluster.test", "infrastructure.%", "1"),
 					resource.TestCheckResourceAttr("capi_cluster.test", "management.skip_init", "true"),
 					resource.TestCheckResourceAttr("capi_cluster.test", "management.self_managed", "false"),
 					resource.TestCheckResourceAttrSet("capi_cluster.test", "id"),
@@ -45,8 +45,8 @@ func testAccClusterResourceConfig(name string) string {
 resource "capi_cluster" "test" {
   name = "` + name + `"
 
-  infrastructure {
-    provider = "docker"
+  infrastructure = {
+    docker = {}
   }
 
   management {

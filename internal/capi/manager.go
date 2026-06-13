@@ -160,8 +160,8 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 	}
 
 	// Step 2: Install CAPI providers on management/bootstrap cluster.
-	// All addon providers (including those with customizations) go through
-	// clusterctl init. Customized addons have their component YAML modified
+	// All providers (including those with customizations) go through
+	// clusterctl init. Customized providers have their component YAML modified
 	// transparently via the injected RepositoryClientFactory in the installer.
 	namespace := opts.Namespace
 	if namespace == "" {
@@ -169,18 +169,7 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 	}
 	if !opts.SkipInit {
 		m.logger.Printf("Installing CAPI providers on %s", mgmtCluster.Name)
-		initOpts := InitOptions{
-			CoreProvider:            opts.CoreProvider,
-			InfrastructureProviders: []string{opts.InfrastructureProvider},
-			AddonProviders:          AddonProviderStrings(opts.Addons),
-			Addons:                  opts.Addons,
-		}
-		if opts.BootstrapProvider != "" {
-			initOpts.BootstrapProviders = []string{opts.BootstrapProvider}
-		}
-		if opts.ControlPlaneProvider != "" {
-			initOpts.ControlPlaneProviders = []string{opts.ControlPlaneProvider}
-		}
+		initOpts := m.buildInitOptions(opts)
 
 		if err := m.installer.Init(ctx, mgmtCluster, initOpts); err != nil {
 			m.cleanupOnError(ctx, bootstrapCluster)
@@ -276,18 +265,7 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 		}
 
 		// Install CAPI on the workload cluster before move
-		initOpts := InitOptions{
-			CoreProvider:            opts.CoreProvider,
-			InfrastructureProviders: []string{opts.InfrastructureProvider},
-			AddonProviders:          AddonProviderStrings(opts.Addons),
-			Addons:                  opts.Addons,
-		}
-		if opts.BootstrapProvider != "" {
-			initOpts.BootstrapProviders = []string{opts.BootstrapProvider}
-		}
-		if opts.ControlPlaneProvider != "" {
-			initOpts.ControlPlaneProviders = []string{opts.ControlPlaneProvider}
-		}
+		initOpts := m.buildInitOptions(opts)
 
 		if err := m.installer.Init(ctx, workloadCluster, initOpts); err != nil {
 			m.cleanupOnError(ctx, bootstrapCluster)
@@ -475,4 +453,63 @@ func isRetryableMoveError(err error) bool {
 	}
 
 	return false
+}
+
+// buildInitOptions constructs InitOptions from CreateClusterOptions,
+// merging both legacy string fields and new map-based provider configs.
+func (m *Manager) buildInitOptions(opts CreateClusterOptions) InitOptions {
+	initOpts := InitOptions{
+		AllProviders: make(map[string]*ProviderConfig),
+	}
+
+	// Legacy string fields (backward compatibility).
+	if opts.CoreProvider != "" {
+		initOpts.CoreProvider = opts.CoreProvider
+	}
+	if opts.InfrastructureProvider != "" {
+		initOpts.InfrastructureProviders = []string{opts.InfrastructureProvider}
+	}
+	if opts.BootstrapProvider != "" {
+		initOpts.BootstrapProviders = []string{opts.BootstrapProvider}
+	}
+	if opts.ControlPlaneProvider != "" {
+		initOpts.ControlPlaneProviders = []string{opts.ControlPlaneProvider}
+	}
+
+	// Map-based provider configs (new path — overrides legacy if both set).
+	if len(opts.InfrastructureProviders) > 0 {
+		initOpts.InfrastructureProviders = ProviderStrings(opts.InfrastructureProviders)
+		for name, cfg := range opts.InfrastructureProviders {
+			initOpts.AllProviders[name] = cfg
+		}
+	}
+	if len(opts.BootstrapProviders) > 0 {
+		initOpts.BootstrapProviders = ProviderStrings(opts.BootstrapProviders)
+		for name, cfg := range opts.BootstrapProviders {
+			initOpts.AllProviders[name] = cfg
+		}
+	}
+	if len(opts.ControlPlaneProviders) > 0 {
+		initOpts.ControlPlaneProviders = ProviderStrings(opts.ControlPlaneProviders)
+		for name, cfg := range opts.ControlPlaneProviders {
+			initOpts.AllProviders[name] = cfg
+		}
+	}
+	if len(opts.CoreProviders) > 0 {
+		strs := ProviderStrings(opts.CoreProviders)
+		if len(strs) > 0 {
+			initOpts.CoreProvider = strs[0]
+		}
+		for name, cfg := range opts.CoreProviders {
+			initOpts.AllProviders[name] = cfg
+		}
+	}
+	if len(opts.AddonProviders) > 0 {
+		initOpts.AddonProviders = ProviderStrings(opts.AddonProviders)
+		for name, cfg := range opts.AddonProviders {
+			initOpts.AllProviders[name] = cfg
+		}
+	}
+
+	return initOpts
 }

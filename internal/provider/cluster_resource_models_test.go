@@ -15,6 +15,35 @@ import (
 	"github.com/tinkerbell-community/terraform-provider-capi/internal/capi"
 )
 
+// --- Test Helpers ---
+
+// buildProviderMap builds a types.Map containing a single ProviderConfigModel entry.
+func buildProviderMap(ctx context.Context, t *testing.T, name string, version string) types.Map {
+	t.Helper()
+	model := ProviderConfigModel{
+		Version:               types.StringValue(version),
+		Namespace:             types.StringNull(),
+		ConfigVariables:       types.MapNull(types.StringType),
+		SecretConfigVariables: types.MapNull(types.StringType),
+		FetchConfig:           types.ObjectNull(fetchConfigAttrTypes()),
+		Deployment:            types.ObjectNull(deploymentAttrTypes()),
+		Manager:               types.ObjectNull(managerAttrTypes()),
+		AdditionalManifests:   types.StringNull(),
+		ManifestPatches:       types.ListNull(types.StringType),
+		Patches:               types.ListNull(types.ObjectType{AttrTypes: patchAttrTypes()}),
+	}
+	m, d := types.MapValueFrom(ctx, types.ObjectType{AttrTypes: providerConfigAttrTypes()}, map[string]ProviderConfigModel{name: model})
+	if d.HasError() {
+		t.Fatalf("buildProviderMap: %v", d)
+	}
+	return m
+}
+
+// nullProviderMap returns a null types.Map for provider configs.
+func nullProviderMap() types.Map {
+	return types.MapNull(types.ObjectType{AttrTypes: providerConfigAttrTypes()})
+}
+
 // --- Schema Tests ---
 
 func TestClusterResource_Schema(t *testing.T) {
@@ -28,8 +57,8 @@ func TestClusterResource_Schema(t *testing.T) {
 		t.Fatalf("Schema returned errors: %v", resp.Diagnostics)
 	}
 
-	if resp.Schema.Version != 1 {
-		t.Errorf("expected schema version 1, got %d", resp.Schema.Version)
+	if resp.Schema.Version != 2 {
+		t.Errorf("expected schema version 2, got %d", resp.Schema.Version)
 	}
 
 	// Verify top-level attributes exist
@@ -39,25 +68,30 @@ func TestClusterResource_Schema(t *testing.T) {
 		}
 	}
 
-	// Verify nested attributes exist and are SingleNestedAttribute
-	nestedAttrs := []string{"management", "infrastructure", "bootstrap", "control_plane", "core", "workers", "inventory", "wait", "output", "status"}
-	for _, name := range nestedAttrs {
+	// Verify MapNestedAttribute provider maps
+	mapAttrs := []string{"infrastructure", "bootstrap", "control_plane", "core", "addon"}
+	for _, name := range mapAttrs {
 		a, ok := resp.Schema.Attributes[name]
 		if !ok {
-			t.Errorf("missing nested attribute %q", name)
+			t.Errorf("missing attribute %q", name)
+			continue
+		}
+		if _, isMap := a.(schema.MapNestedAttribute); !isMap {
+			t.Errorf("attribute %q should be MapNestedAttribute, got %T", name, a)
+		}
+	}
+
+	// Verify SingleNestedAttributes
+	singleAttrs := []string{"management", "topology", "inventory", "wait", "output", "status"}
+	for _, name := range singleAttrs {
+		a, ok := resp.Schema.Attributes[name]
+		if !ok {
+			t.Errorf("missing attribute %q", name)
 			continue
 		}
 		if _, isSingle := a.(schema.SingleNestedAttribute); !isSingle {
 			t.Errorf("attribute %q should be SingleNestedAttribute, got %T", name, a)
 		}
-	}
-
-	// Verify addons is a ListNestedAttribute
-	addonsAttr, ok := resp.Schema.Attributes["addons"]
-	if !ok {
-		t.Error("missing attribute \"addons\"")
-	} else if _, isList := addonsAttr.(schema.ListNestedAttribute); !isList {
-		t.Errorf("attribute \"addons\" should be ListNestedAttribute, got %T", addonsAttr)
 	}
 }
 
@@ -75,13 +109,13 @@ func TestClusterResource_SchemaRequiredAttributes(t *testing.T) {
 	}
 
 	// infrastructure is required
-	infraAttr := resp.Schema.Attributes["infrastructure"].(schema.SingleNestedAttribute)
+	infraAttr := resp.Schema.Attributes["infrastructure"].(schema.MapNestedAttribute)
 	if !infraAttr.Required {
 		t.Error("infrastructure should be Required")
 	}
 
 	// bootstrap is optional
-	bsAttr := resp.Schema.Attributes["bootstrap"].(schema.SingleNestedAttribute)
+	bsAttr := resp.Schema.Attributes["bootstrap"].(schema.MapNestedAttribute)
 	if !bsAttr.Optional {
 		t.Error("bootstrap should be Optional")
 	}
@@ -163,50 +197,69 @@ func TestExtractManagement_Populated(t *testing.T) {
 	}
 }
 
-func TestExtractInfrastructure_Populated(t *testing.T) {
+func TestExtractProviderMap_Populated(t *testing.T) {
 	ctx := context.Background()
-	infra := InfrastructureModel{Provider: types.StringValue("docker")}
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), infra)
+	infraMap := buildProviderMap(ctx, t, "docker", "v1.12.2")
 
-	data := &ClusterResourceModel{Infrastructure: infraVal}
-	result, diags := extractInfrastructure(ctx, data)
+	result, diags := extractProviderMap(ctx, infraMap)
 	if diags.HasError() {
 		t.Fatalf("unexpected error: %v", diags)
 	}
-	if result.Provider.ValueString() != "docker" {
-		t.Errorf("provider = %q, want %q", result.Provider.ValueString(), "docker")
+	if len(result) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(result))
+	}
+	cfg, ok := result["docker"]
+	if !ok {
+		t.Fatal("expected 'docker' key")
+	}
+	if cfg.Version.ValueString() != "v1.12.2" {
+		t.Errorf("version = %q, want %q", cfg.Version.ValueString(), "v1.12.2")
 	}
 }
 
-func TestExtractControlPlane_WithMachineCount(t *testing.T) {
+func TestExtractProviderMap_Null(t *testing.T) {
 	ctx := context.Background()
-	cp := ControlPlaneModel{
-		Provider:     types.StringValue("kubeadm:v1.12.2"),
-		MachineCount: types.Int64Value(3),
-	}
-	cpVal, _ := types.ObjectValueFrom(ctx, controlPlaneAttrTypes(), cp)
-
-	data := &ClusterResourceModel{ControlPlane: cpVal}
-	result, diags := extractControlPlane(ctx, data)
-	if diags.HasError() {
-		t.Fatalf("unexpected error: %v", diags)
-	}
-	if result.MachineCount.ValueInt64() != 3 {
-		t.Errorf("machine_count = %d, want 3", result.MachineCount.ValueInt64())
-	}
-}
-
-func TestExtractWorkers_Null(t *testing.T) {
-	ctx := context.Background()
-	data := &ClusterResourceModel{
-		Workers: types.ObjectNull(workersAttrTypes()),
-	}
-	result, diags := extractWorkers(ctx, data)
+	result, diags := extractProviderMap(ctx, nullProviderMap())
 	if diags.HasError() {
 		t.Fatalf("unexpected error: %v", diags)
 	}
 	if result != nil {
-		t.Error("expected nil for null workers")
+		t.Error("expected nil for null provider map")
+	}
+}
+
+func TestExtractTopology_Populated(t *testing.T) {
+	ctx := context.Background()
+	topo := TopologyModel{
+		ControlPlaneCount: types.Int64Value(3),
+		WorkerCount:       types.Int64Value(5),
+	}
+	topoVal, _ := types.ObjectValueFrom(ctx, topologyAttrTypes(), topo)
+
+	data := &ClusterResourceModel{Topology: topoVal}
+	result, diags := extractTopology(ctx, data)
+	if diags.HasError() {
+		t.Fatalf("unexpected error: %v", diags)
+	}
+	if result.ControlPlaneCount.ValueInt64() != 3 {
+		t.Errorf("control_plane_count = %d, want 3", result.ControlPlaneCount.ValueInt64())
+	}
+	if result.WorkerCount.ValueInt64() != 5 {
+		t.Errorf("worker_count = %d, want 5", result.WorkerCount.ValueInt64())
+	}
+}
+
+func TestExtractTopology_Null(t *testing.T) {
+	ctx := context.Background()
+	data := &ClusterResourceModel{
+		Topology: types.ObjectNull(topologyAttrTypes()),
+	}
+	result, diags := extractTopology(ctx, data)
+	if diags.HasError() {
+		t.Fatalf("unexpected error: %v", diags)
+	}
+	if result != nil {
+		t.Error("expected nil for null topology")
 	}
 }
 
@@ -284,20 +337,19 @@ func TestNullStatus(t *testing.T) {
 func TestBuildCreateOptions_Minimal(t *testing.T) {
 	ctx := context.Background()
 
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{
-		Provider: types.StringValue("docker"),
-	})
+	infraMap := buildProviderMap(ctx, t, "docker", "")
 
 	data := &ClusterResourceModel{
 		Name:              types.StringValue("test-cluster"),
 		KubernetesVersion: types.StringNull(),
 		Flavor:            types.StringNull(),
-		Infrastructure:    infraVal,
+		Infrastructure:    infraMap,
 		Management:        types.ObjectNull(managementAttrTypes()),
-		Bootstrap:         types.ObjectNull(bootstrapAttrTypes()),
-		ControlPlane:      types.ObjectNull(controlPlaneAttrTypes()),
-		Core:              types.ObjectNull(coreAttrTypes()),
-		Workers:           types.ObjectNull(workersAttrTypes()),
+		Bootstrap:         nullProviderMap(),
+		ControlPlane:      nullProviderMap(),
+		Core:              nullProviderMap(),
+		Addon:             nullProviderMap(),
+		Topology:          types.ObjectNull(topologyAttrTypes()),
 		Inventory:         types.ObjectNull(inventoryAttrTypes()),
 		Wait:              types.ObjectNull(waitAttrTypes()),
 		Output:            types.ObjectNull(outputAttrTypes()),
@@ -322,27 +374,19 @@ func TestBuildCreateOptions_Minimal(t *testing.T) {
 func TestBuildCreateOptions_Full(t *testing.T) {
 	ctx := context.Background()
 
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{
-		Provider: types.StringValue("tinkerbell:v0.5.4"),
-	})
+	infraMap := buildProviderMap(ctx, t, "tinkerbell", "v0.5.4")
 	mgmtVal, _ := types.ObjectValueFrom(ctx, managementAttrTypes(), ManagementModel{
 		Kubeconfig:  types.StringNull(),
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(true),
 		Namespace:   types.StringValue("capi-ns"),
 	})
-	bsVal, _ := types.ObjectValueFrom(ctx, bootstrapAttrTypes(), BootstrapModel{
-		Provider: types.StringValue("kubeadm:v1.12.2"),
-	})
-	cpVal, _ := types.ObjectValueFrom(ctx, controlPlaneAttrTypes(), ControlPlaneModel{
-		Provider:     types.StringValue("kubeadm:v1.12.2"),
-		MachineCount: types.Int64Value(3),
-	})
-	coreVal, _ := types.ObjectValueFrom(ctx, coreAttrTypes(), CoreModel{
-		Provider: types.StringValue("cluster-api:v1.12.2"),
-	})
-	wVal, _ := types.ObjectValueFrom(ctx, workersAttrTypes(), WorkersModel{
-		MachineCount: types.Int64Value(5),
+	bsMap := buildProviderMap(ctx, t, "kubeadm", "v1.12.2")
+	cpMap := buildProviderMap(ctx, t, "kubeadm", "v1.12.2")
+	coreMap := buildProviderMap(ctx, t, "cluster-api", "v1.12.2")
+	topoVal, _ := types.ObjectValueFrom(ctx, topologyAttrTypes(), TopologyModel{
+		ControlPlaneCount: types.Int64Value(3),
+		WorkerCount:       types.Int64Value(5),
 	})
 	waitVal, _ := types.ObjectValueFrom(ctx, waitAttrTypes(), WaitModel{
 		Enabled: types.BoolValue(true),
@@ -356,12 +400,13 @@ func TestBuildCreateOptions_Full(t *testing.T) {
 		Name:              types.StringValue("prod"),
 		KubernetesVersion: types.StringValue("v1.31.0"),
 		Flavor:            types.StringValue("ha"),
-		Infrastructure:    infraVal,
+		Infrastructure:    infraMap,
 		Management:        mgmtVal,
-		Bootstrap:         bsVal,
-		ControlPlane:      cpVal,
-		Core:              coreVal,
-		Workers:           wVal,
+		Bootstrap:         bsMap,
+		ControlPlane:      cpMap,
+		Core:              coreMap,
+		Addon:             nullProviderMap(),
+		Topology:          topoVal,
 		Inventory:         types.ObjectNull(inventoryAttrTypes()),
 		Wait:              waitVal,
 		Output:            outVal,
@@ -405,6 +450,13 @@ func TestBuildCreateOptions_Full(t *testing.T) {
 	if opts.KubeconfigOutputPath != "/tmp/test.kubeconfig" {
 		t.Errorf("kubeconfig path = %q", opts.KubeconfigOutputPath)
 	}
+	// Verify map-based provider configs were populated
+	if len(opts.InfrastructureProviders) != 1 {
+		t.Errorf("expected 1 infra provider config, got %d", len(opts.InfrastructureProviders))
+	}
+	if len(opts.BootstrapProviders) != 1 {
+		t.Errorf("expected 1 bootstrap provider config, got %d", len(opts.BootstrapProviders))
+	}
 }
 
 // --- Validation Tests ---
@@ -413,16 +465,14 @@ func TestValidateLifecycleConfig_Docker(t *testing.T) {
 	ctx := context.Background()
 	r := &ClusterResource{}
 
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{
-		Provider: types.StringValue("docker"),
-	})
+	infraMap := buildProviderMap(ctx, t, "docker", "")
 	data := &ClusterResourceModel{
 		Name:           types.StringValue("test"),
-		Infrastructure: infraVal,
+		Infrastructure: infraMap,
 		Management:     types.ObjectNull(managementAttrTypes()),
-		Bootstrap:      types.ObjectNull(bootstrapAttrTypes()),
-		ControlPlane:   types.ObjectNull(controlPlaneAttrTypes()),
-		Workers:        types.ObjectNull(workersAttrTypes()),
+		Bootstrap:      nullProviderMap(),
+		ControlPlane:   nullProviderMap(),
+		Topology:       types.ObjectNull(topologyAttrTypes()),
 		Inventory:      types.ObjectNull(inventoryAttrTypes()),
 	}
 
@@ -437,16 +487,14 @@ func TestValidateLifecycleConfig_UnsupportedProvider(t *testing.T) {
 	ctx := context.Background()
 	r := &ClusterResource{}
 
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{
-		Provider: types.StringValue("badprovider"),
-	})
+	infraMap := buildProviderMap(ctx, t, "badprovider", "")
 	data := &ClusterResourceModel{
 		Name:           types.StringValue("test"),
-		Infrastructure: infraVal,
+		Infrastructure: infraMap,
 		Management:     types.ObjectNull(managementAttrTypes()),
-		Bootstrap:      types.ObjectNull(bootstrapAttrTypes()),
-		ControlPlane:   types.ObjectNull(controlPlaneAttrTypes()),
-		Workers:        types.ObjectNull(workersAttrTypes()),
+		Bootstrap:      nullProviderMap(),
+		ControlPlane:   nullProviderMap(),
+		Topology:       types.ObjectNull(topologyAttrTypes()),
 		Inventory:      types.ObjectNull(inventoryAttrTypes()),
 	}
 
@@ -461,9 +509,7 @@ func TestValidateLifecycleConfig_TinkerbellRequiresSelfManaged(t *testing.T) {
 	ctx := context.Background()
 	r := &ClusterResource{}
 
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{
-		Provider: types.StringValue("tinkerbell:v0.5.4"),
-	})
+	infraMap := buildProviderMap(ctx, t, "tinkerbell", "v0.5.4")
 	mgmtVal, _ := types.ObjectValueFrom(ctx, managementAttrTypes(), ManagementModel{
 		Kubeconfig:  types.StringNull(),
 		SkipInit:    types.BoolValue(false),
@@ -472,11 +518,11 @@ func TestValidateLifecycleConfig_TinkerbellRequiresSelfManaged(t *testing.T) {
 	})
 	data := &ClusterResourceModel{
 		Name:           types.StringValue("test"),
-		Infrastructure: infraVal,
+		Infrastructure: infraMap,
 		Management:     mgmtVal,
-		Bootstrap:      types.ObjectNull(bootstrapAttrTypes()),
-		ControlPlane:   types.ObjectNull(controlPlaneAttrTypes()),
-		Workers:        types.ObjectNull(workersAttrTypes()),
+		Bootstrap:      nullProviderMap(),
+		ControlPlane:   nullProviderMap(),
+		Topology:       types.ObjectNull(topologyAttrTypes()),
 		Inventory:      types.ObjectNull(inventoryAttrTypes()),
 	}
 
@@ -491,30 +537,23 @@ func TestValidateLifecycleConfig_TinkerbellWithTalos(t *testing.T) {
 	ctx := context.Background()
 	r := &ClusterResource{}
 
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{
-		Provider: types.StringValue("tinkerbell:v0.5.4"),
-	})
+	infraMap := buildProviderMap(ctx, t, "tinkerbell", "v0.5.4")
 	mgmtVal, _ := types.ObjectValueFrom(ctx, managementAttrTypes(), ManagementModel{
 		Kubeconfig:  types.StringNull(),
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(true),
 		Namespace:   types.StringNull(),
 	})
-	bsVal, _ := types.ObjectValueFrom(ctx, bootstrapAttrTypes(), BootstrapModel{
-		Provider: types.StringValue("talos:v0.6.7"),
-	})
-	cpVal, _ := types.ObjectValueFrom(ctx, controlPlaneAttrTypes(), ControlPlaneModel{
-		Provider:     types.StringValue("talos:v0.6.7"),
-		MachineCount: types.Int64Value(3),
-	})
+	bsMap := buildProviderMap(ctx, t, "talos", "v0.6.7")
+	cpMap := buildProviderMap(ctx, t, "talos", "v0.6.7")
 
 	data := &ClusterResourceModel{
 		Name:           types.StringValue("test"),
-		Infrastructure: infraVal,
+		Infrastructure: infraMap,
 		Management:     mgmtVal,
-		Bootstrap:      bsVal,
-		ControlPlane:   cpVal,
-		Workers:        types.ObjectNull(workersAttrTypes()),
+		Bootstrap:      bsMap,
+		ControlPlane:   cpMap,
+		Topology:       types.ObjectNull(topologyAttrTypes()),
 		Inventory:      types.ObjectNull(inventoryAttrTypes()),
 	}
 
@@ -529,26 +568,22 @@ func TestValidateLifecycleConfig_TinkerbellInvalidBootstrap(t *testing.T) {
 	ctx := context.Background()
 	r := &ClusterResource{}
 
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{
-		Provider: types.StringValue("tinkerbell"),
-	})
+	infraMap := buildProviderMap(ctx, t, "tinkerbell", "")
 	mgmtVal, _ := types.ObjectValueFrom(ctx, managementAttrTypes(), ManagementModel{
 		Kubeconfig:  types.StringNull(),
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(true),
 		Namespace:   types.StringNull(),
 	})
-	bsVal, _ := types.ObjectValueFrom(ctx, bootstrapAttrTypes(), BootstrapModel{
-		Provider: types.StringValue("microk8s"),
-	})
+	bsMap := buildProviderMap(ctx, t, "microk8s", "")
 
 	data := &ClusterResourceModel{
 		Name:           types.StringValue("test"),
-		Infrastructure: infraVal,
+		Infrastructure: infraMap,
 		Management:     mgmtVal,
-		Bootstrap:      bsVal,
-		ControlPlane:   types.ObjectNull(controlPlaneAttrTypes()),
-		Workers:        types.ObjectNull(workersAttrTypes()),
+		Bootstrap:      bsMap,
+		ControlPlane:   nullProviderMap(),
+		Topology:       types.ObjectNull(topologyAttrTypes()),
 		Inventory:      types.ObjectNull(inventoryAttrTypes()),
 	}
 
@@ -782,6 +817,7 @@ func TestClusterResource_UpgradeState(t *testing.T) {
 	r := &ClusterResource{}
 	upgraders := r.UpgradeState(ctx)
 
+	// v0 → v2 upgrader
 	if _, ok := upgraders[0]; !ok {
 		t.Error("expected v0 upgrader")
 	}
@@ -790,5 +826,16 @@ func TestClusterResource_UpgradeState(t *testing.T) {
 	}
 	if upgraders[0].StateUpgrader == nil {
 		t.Error("v0 upgrader should have a StateUpgrader function")
+	}
+
+	// v1 → v2 upgrader
+	if _, ok := upgraders[1]; !ok {
+		t.Error("expected v1 upgrader")
+	}
+	if upgraders[1].PriorSchema == nil {
+		t.Error("v1 upgrader should have a PriorSchema")
+	}
+	if upgraders[1].StateUpgrader == nil {
+		t.Error("v1 upgrader should have a StateUpgrader function")
 	}
 }

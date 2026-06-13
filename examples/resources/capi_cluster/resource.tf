@@ -2,21 +2,21 @@ resource "capi_cluster" "example" {
   name               = "my-cluster"
   kubernetes_version = "v1.31.0"
 
-  infrastructure {
-    provider = "docker"
+  infrastructure = {
+    docker = {}
   }
 
-  bootstrap {
-    provider = "kubeadm"
+  bootstrap = {
+    kubeadm = {}
   }
 
-  control_plane {
-    provider      = "kubeadm"
-    machine_count = 1
+  control_plane = {
+    kubeadm = {}
   }
 
-  workers {
-    machine_count = 2
+  topology {
+    control_plane_count = 1
+    worker_count        = 2
   }
 
   wait {

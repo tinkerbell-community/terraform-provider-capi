@@ -45,8 +45,8 @@ func NewClusterctlInstaller(configPath string) *ClusterctlInstaller {
 func (i *ClusterctlInstaller) Init(ctx context.Context, cluster *Cluster, opts InitOptions) error {
 	var clientOpts []clusterctlclient.Option
 
-	// Build customization map for addons that need component modifications.
-	customizations := CustomizedAddons(opts.Addons)
+	// Build customization map for providers that need component modifications.
+	customizations := CustomizedProviders(opts.AllProviders)
 
 	if len(customizations) > 0 {
 		// Create the config client so we can inject both it and a custom

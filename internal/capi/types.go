@@ -58,10 +58,11 @@ type InitOptions struct {
 	// AddonProviders is the list of addon providers to install (e.g., "helm:v0.2.12").
 	AddonProviders []string
 
-	// Addons is the full addon configuration list. Addons with customizations
+	// AllProviders is the full provider configuration map (name → config)
+	// for all provider types combined. Providers with customizations
 	// trigger injection of a custom RepositoryClientFactory that applies
 	// capi-operator-style modifications to provider component YAML.
-	Addons []AddonConfig
+	AllProviders map[string]*ProviderConfig
 }
 
 // TemplateOptions configures cluster template generation.
@@ -150,15 +151,19 @@ type CreateClusterOptions struct {
 	Namespace string
 
 	// InfrastructureProvider is the infrastructure provider (e.g., "docker").
+	// Deprecated: Use InfrastructureProviders map for new code.
 	InfrastructureProvider string
 
 	// BootstrapProvider is the bootstrap provider (e.g., "kubeadm").
+	// Deprecated: Use BootstrapProviders map for new code.
 	BootstrapProvider string
 
 	// ControlPlaneProvider is the control plane provider (e.g., "kubeadm").
+	// Deprecated: Use ControlPlaneProviders map for new code.
 	ControlPlaneProvider string
 
 	// CoreProvider is the core provider version.
+	// Deprecated: Use CoreProviders map for new code.
 	CoreProvider string
 
 	// KubernetesVersion is the Kubernetes version.
@@ -192,19 +197,36 @@ type CreateClusterOptions struct {
 	// KubeconfigOutputPath is where to write the workload cluster kubeconfig.
 	KubeconfigOutputPath string
 
-	// Addons is the list of addon provider configurations.
-	// Simple addons (only Provider set) are installed via clusterctl init.
-	// Rich addons (with customizations) generate AddonProvider CRs for the operator.
-	Addons []AddonConfig
+	// InfrastructureProviders is a map of infrastructure provider configs
+	// keyed by provider name (e.g., "docker", "tinkerbell").
+	InfrastructureProviders map[string]*ProviderConfig
+
+	// BootstrapProviders is a map of bootstrap provider configs.
+	BootstrapProviders map[string]*ProviderConfig
+
+	// ControlPlaneProviders is a map of control plane provider configs.
+	ControlPlaneProviders map[string]*ProviderConfig
+
+	// CoreProviders is a map of core provider configs.
+	CoreProviders map[string]*ProviderConfig
+
+	// AddonProviders is a map of addon provider configs.
+	AddonProviders map[string]*ProviderConfig
 }
 
-// AddonConfig carries the full configuration for a CAPI addon provider,
-// modeled after the cluster-api-operator AddonProvider CRD (v1alpha2).
+// ProviderConfig carries the full configuration for a CAPI provider,
+// modeled after the capi-operator Helm chart per-provider values.
 // Customizations are applied natively by wrapping the clusterctl client's
 // repository factory — the operator itself is not required.
-type AddonConfig struct {
-	// Provider is the addon provider name:version (e.g., "helm:v0.2.12").
-	Provider string
+// Used for all provider types: infrastructure, bootstrap, control_plane,
+// core, and addon.
+type ProviderConfig struct {
+	// Version is the provider version (e.g., "v1.12.2").
+	// Omit to use the default version from clusterctl.
+	Version string
+
+	// Namespace is the namespace where the provider components are installed.
+	Namespace string
 
 	// ConfigVariables are template variables injected into the provider's
 	// component YAML during processing (${VAR} substitution).
@@ -217,10 +239,10 @@ type AddonConfig struct {
 	// FetchConfig configures how provider components are fetched.
 	FetchConfig *FetchConfig
 
-	// Deployment customizes the addon provider controller deployment.
+	// Deployment customizes the provider controller deployment.
 	Deployment *DeploymentConfig
 
-	// Manager configures the addon controller manager.
+	// Manager configures the provider controller manager.
 	Manager *ManagerConfig
 
 	// AdditionalManifests is inline YAML content of additional manifests
@@ -236,12 +258,24 @@ type AddonConfig struct {
 	Patches []PatchConfig
 }
 
-// HasCustomizations returns true if the addon has fields beyond the basic provider name:version.
-func (a *AddonConfig) HasCustomizations() bool {
-	return len(a.ConfigVariables) > 0 || len(a.SecretConfigVariables) > 0 ||
-		a.FetchConfig != nil || a.Deployment != nil ||
-		a.Manager != nil || a.AdditionalManifests != "" ||
-		len(a.ManifestPatches) > 0 || len(a.Patches) > 0
+// ProviderString returns the clusterctl-compatible "name:version" string.
+// If version is empty, returns just the name.
+func ProviderString(name string, cfg *ProviderConfig) string {
+	if cfg != nil && cfg.Version != "" {
+		return name + ":" + cfg.Version
+	}
+	return name
+}
+
+// HasCustomizations returns true if the provider config has fields beyond basic name:version.
+func (c *ProviderConfig) HasCustomizations() bool {
+	if c == nil {
+		return false
+	}
+	return len(c.ConfigVariables) > 0 || len(c.SecretConfigVariables) > 0 ||
+		c.FetchConfig != nil || c.Deployment != nil ||
+		c.Manager != nil || c.AdditionalManifests != "" ||
+		len(c.ManifestPatches) > 0 || len(c.Patches) > 0
 }
 
 // FetchConfig configures how provider components are fetched.

@@ -331,8 +331,8 @@ func TestMatchesTarget(t *testing.T) {
 func TestBuildComponentsAlterFn_FullPipeline(t *testing.T) {
 	replicas := int64(3)
 	verbosity := int64(5)
-	addon := AddonConfig{
-		Provider: "helm:v0.2.12",
+	cfg := ProviderConfig{
+		Version: "v0.2.12",
 		Deployment: &DeploymentConfig{
 			Replicas: &replicas,
 		},
@@ -345,7 +345,7 @@ func TestBuildComponentsAlterFn_FullPipeline(t *testing.T) {
 		AdditionalManifests: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: extra\n  namespace: test\ndata:\n  key: val\n",
 	}
 
-	alterFn := BuildComponentsAlterFn(addon)
+	alterFn := BuildComponentsAlterFn(cfg)
 	objs := []unstructured.Unstructured{makeDeployment("helm-controller-manager")}
 
 	result, err := alterFn(objs)
@@ -436,29 +436,37 @@ func TestSetArg_ReplaceExisting(t *testing.T) {
 	}
 }
 
-func TestAddonProviderStrings(t *testing.T) {
-	addons := []AddonConfig{
-		{Provider: "helm:v0.2.12"},
-		{Provider: "flux:v0.1.0"},
+func TestProviderStrings(t *testing.T) {
+	providers := map[string]*ProviderConfig{
+		"helm": {Version: "v0.2.12"},
+		"flux": {Version: "v0.1.0"},
 	}
-	result := AddonProviderStrings(addons)
-	if len(result) != 2 || result[0] != "helm:v0.2.12" || result[1] != "flux:v0.1.0" {
+	result := ProviderStrings(providers)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result))
+	}
+	// Map iteration order is random, so check for both
+	has := map[string]bool{}
+	for _, s := range result {
+		has[s] = true
+	}
+	if !has["helm:v0.2.12"] || !has["flux:v0.1.0"] {
 		t.Errorf("unexpected result: %v", result)
 	}
 }
 
-func TestCustomizedAddons(t *testing.T) {
+func TestCustomizedProviders(t *testing.T) {
 	replicas := int64(3)
-	addons := []AddonConfig{
-		{Provider: "helm:v0.2.12"},
-		{Provider: "flux:v0.1.0", Deployment: &DeploymentConfig{Replicas: &replicas}},
+	providers := map[string]*ProviderConfig{
+		"helm": {Version: "v0.2.12"},
+		"flux": {Version: "v0.1.0", Deployment: &DeploymentConfig{Replicas: &replicas}},
 	}
-	result := CustomizedAddons(addons)
+	result := CustomizedProviders(providers)
 	if len(result) != 1 {
-		t.Fatalf("expected 1 customized addon, got %d", len(result))
+		t.Fatalf("expected 1 customized provider, got %d", len(result))
 	}
 	if _, ok := result["flux"]; !ok {
-		t.Error("expected 'flux' in customized addons")
+		t.Error("expected 'flux' in customized providers")
 	}
 }
 
@@ -505,44 +513,44 @@ func TestCustomProcessor_FallsBackToResolver(t *testing.T) {
 	}
 }
 
-func TestParseProviderNameVersion(t *testing.T) {
+func TestProviderString(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantName    string
-		wantVersion string
+		name    string
+		cfg     *ProviderConfig
+		want    string
 	}{
-		{"helm:v0.2.12", "helm", "v0.2.12"},
-		{"helm", "helm", ""},
-		{"my-provider:v1.0.0", "my-provider", "v1.0.0"},
-		{"  helm : v0.2.12 ", "helm", "v0.2.12"},
+		{"helm", &ProviderConfig{Version: "v0.2.12"}, "helm:v0.2.12"},
+		{"helm", &ProviderConfig{}, "helm"},
+		{"helm", nil, "helm"},
+		{"my-provider", &ProviderConfig{Version: "v1.0.0"}, "my-provider:v1.0.0"},
 	}
 	for _, tt := range tests {
-		name, ver := parseProviderNameVersion(tt.input)
-		if name != tt.wantName || ver != tt.wantVersion {
-			t.Errorf("parseProviderNameVersion(%q) = (%q, %q), want (%q, %q)",
-				tt.input, name, ver, tt.wantName, tt.wantVersion)
+		got := ProviderString(tt.name, tt.cfg)
+		if got != tt.want {
+			t.Errorf("ProviderString(%q, %v) = %q, want %q",
+				tt.name, tt.cfg, got, tt.want)
 		}
 	}
 }
 
 func TestHasCustomizations(t *testing.T) {
 	tests := []struct {
-		name  string
-		addon AddonConfig
-		want  bool
+		name string
+		cfg  ProviderConfig
+		want bool
 	}{
-		{"empty", AddonConfig{Provider: "helm:v0.2.12"}, false},
-		{"config vars", AddonConfig{Provider: "helm", ConfigVariables: map[string]string{"k": "v"}}, true},
-		{"secret vars", AddonConfig{Provider: "helm", SecretConfigVariables: map[string]string{"k": "v"}}, true},
-		{"deployment", AddonConfig{Provider: "helm", Deployment: &DeploymentConfig{}}, true},
-		{"manager", AddonConfig{Provider: "helm", Manager: &ManagerConfig{}}, true},
-		{"additional manifests", AddonConfig{Provider: "helm", AdditionalManifests: "yaml"}, true},
-		{"manifest patches", AddonConfig{Provider: "helm", ManifestPatches: []string{"{}"}}, true},
-		{"patches", AddonConfig{Provider: "helm", Patches: []PatchConfig{{Patch: "{}"}}}, true},
+		{"empty", ProviderConfig{Version: "v0.2.12"}, false},
+		{"config vars", ProviderConfig{ConfigVariables: map[string]string{"k": "v"}}, true},
+		{"secret vars", ProviderConfig{SecretConfigVariables: map[string]string{"k": "v"}}, true},
+		{"deployment", ProviderConfig{Deployment: &DeploymentConfig{}}, true},
+		{"manager", ProviderConfig{Manager: &ManagerConfig{}}, true},
+		{"additional manifests", ProviderConfig{AdditionalManifests: "yaml"}, true},
+		{"manifest patches", ProviderConfig{ManifestPatches: []string{"{}"}}, true},
+		{"patches", ProviderConfig{Patches: []PatchConfig{{Patch: "{}"}}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.addon.HasCustomizations(); got != tt.want {
+			if got := tt.cfg.HasCustomizations(); got != tt.want {
 				t.Errorf("HasCustomizations() = %v, want %v", got, tt.want)
 			}
 		})
@@ -552,8 +560,8 @@ func TestHasCustomizations(t *testing.T) {
 // TestBuildComponentsAlterFn_NoCustomizations verifies that a no-op alter function
 // doesn't modify the input objects.
 func TestBuildComponentsAlterFn_NoCustomizations(t *testing.T) {
-	addon := AddonConfig{Provider: "helm:v0.2.12"}
-	alterFn := BuildComponentsAlterFn(addon)
+	cfg := ProviderConfig{Version: "v0.2.12"}
+	alterFn := BuildComponentsAlterFn(cfg)
 	objs := []unstructured.Unstructured{makeDeployment("helm-controller-manager")}
 
 	original, _ := json.Marshal(objs[0].Object)
