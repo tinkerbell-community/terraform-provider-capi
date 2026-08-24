@@ -17,13 +17,9 @@ type ClusterctlInfoRetriever struct {
 	configPath string
 }
 
-// NewClusterctlInfoRetriever creates a new info retriever.
+// NewClusterctlInfoRetriever creates a new info retriever. An empty configPath
+// lets clusterctl fall back to its own default config file resolution.
 func NewClusterctlInfoRetriever(configPath string) *ClusterctlInfoRetriever {
-	if configPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			configPath = filepath.Join(home, ".cluster-api")
-		}
-	}
 	return &ClusterctlInfoRetriever{configPath: configPath}
 }
 

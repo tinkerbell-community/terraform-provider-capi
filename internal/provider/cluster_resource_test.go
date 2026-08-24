@@ -10,6 +10,11 @@ import (
 )
 
 func TestAccClusterResource(t *testing.T) {
+	// The docker infrastructure provider's "development" flavor template is
+	// ClusterClass-based, which requires the ClusterTopology feature gate to
+	// be enabled on the core provider at install time.
+	t.Setenv("CLUSTER_TOPOLOGY", "true")
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -20,7 +25,7 @@ func TestAccClusterResource(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("capi_cluster.test", "name", "test-cluster"),
 					resource.TestCheckResourceAttr("capi_cluster.test", "infrastructure.provider", "docker"),
-					resource.TestCheckResourceAttr("capi_cluster.test", "management.skip_init", "true"),
+					resource.TestCheckResourceAttr("capi_cluster.test", "management.skip_init", "false"),
 					resource.TestCheckResourceAttr("capi_cluster.test", "management.self_managed", "false"),
 					resource.TestCheckResourceAttrSet("capi_cluster.test", "id"),
 					resource.TestCheckResourceAttrSet("capi_cluster.test", "management.namespace"),
@@ -32,8 +37,14 @@ func TestAccClusterResource(t *testing.T) {
 				ImportState:       true,
 				ImportStateVerify: true,
 				ImportStateVerifyIgnore: []string{
+					// flavor, kubernetes_version, and infrastructure are
+					// creation-time-only template parameters: the management
+					// cluster used to create the workload cluster is an
+					// ephemeral bootstrap cluster torn down after apply, so
+					// there is no live source to recover them from on import.
 					"management", "wait", "output",
-					"status",
+					"status", "flavor", "kubernetes_version",
+					"infrastructure", "infrastructure.provider", "infrastructure.%",
 				},
 			},
 		},
@@ -43,17 +54,15 @@ func TestAccClusterResource(t *testing.T) {
 func testAccClusterResourceConfig(name string) string {
 	return `
 resource "capi_cluster" "test" {
-  name = "` + name + `"
+  name               = "` + name + `"
+  flavor             = "development"
+  kubernetes_version = "v1.31.0"
 
-  infrastructure {
+  infrastructure = {
     provider = "docker"
   }
 
-  management {
-    skip_init = true
-  }
-
-  wait {
+  wait = {
     enabled = false
   }
 }

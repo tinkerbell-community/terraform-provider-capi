@@ -6,8 +6,6 @@ package capi
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	clusterctlclient "sigs.k8s.io/cluster-api/cmd/clusterctl/client"
 )
@@ -17,13 +15,9 @@ type ClusterctlTemplateGenerator struct {
 	configPath string
 }
 
-// NewClusterctlTemplateGenerator creates a new template generator.
+// NewClusterctlTemplateGenerator creates a new template generator. An empty
+// configPath lets clusterctl fall back to its own default config file resolution.
 func NewClusterctlTemplateGenerator(configPath string) *ClusterctlTemplateGenerator {
-	if configPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			configPath = filepath.Join(home, ".cluster-api")
-		}
-	}
 	return &ClusterctlTemplateGenerator{configPath: configPath}
 }
 

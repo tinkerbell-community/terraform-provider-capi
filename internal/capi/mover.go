@@ -6,8 +6,6 @@ package capi
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	clusterctlclient "sigs.k8s.io/cluster-api/cmd/clusterctl/client"
 )
@@ -18,13 +16,9 @@ type ClusterctlMover struct {
 	configPath string
 }
 
-// NewClusterctlMover creates a new mover.
+// NewClusterctlMover creates a new mover. An empty configPath lets clusterctl
+// fall back to its own default config file resolution.
 func NewClusterctlMover(configPath string) *ClusterctlMover {
-	if configPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			configPath = filepath.Join(home, ".cluster-api")
-		}
-	}
 	return &ClusterctlMover{configPath: configPath}
 }
 

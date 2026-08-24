@@ -95,10 +95,9 @@ func WithLogger(l *log.Logger) ManagerOption {
 // NewManager creates a new Manager with the given options.
 // If not provided, default implementations are used.
 func NewManager(opts ...ManagerOption) *Manager {
-	configPath := ""
-	if home, err := os.UserHomeDir(); err == nil {
-		configPath = filepath.Join(home, ".cluster-api")
-	}
+	// An empty configPath lets clusterctl fall back to its own default
+	// config file resolution ($XDG_CONFIG_HOME/cluster-api or $HOME/.cluster-api).
+	const configPath = ""
 
 	infoRetriever := NewClusterctlInfoRetriever(configPath)
 

@@ -6,8 +6,6 @@ package capi
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	clusterctlclient "sigs.k8s.io/cluster-api/cmd/clusterctl/client"
 	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/config"
@@ -23,13 +21,10 @@ type ClusterctlInstaller struct {
 	configPath string
 }
 
-// NewClusterctlInstaller creates a new installer with the given clusterctl config path.
+// NewClusterctlInstaller creates a new installer with the given clusterctl
+// config path. An empty configPath lets clusterctl fall back to its own
+// default config file resolution.
 func NewClusterctlInstaller(configPath string) *ClusterctlInstaller {
-	if configPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			configPath = filepath.Join(home, ".cluster-api")
-		}
-	}
 	return &ClusterctlInstaller{configPath: configPath}
 }
 
@@ -82,6 +77,10 @@ func (i *ClusterctlInstaller) Init(ctx context.Context, cluster *Cluster, opts I
 		Kubeconfig: clusterctlclient.Kubeconfig{
 			Path: cluster.KubeconfigPath,
 		},
+		// Wait for provider deployments (including webhook services) to become
+		// ready before returning. Without this, callers can race ahead and
+		// apply manifests that hit not-yet-ready admission webhooks.
+		WaitProviders: true,
 	}
 
 	if opts.CoreProvider != "" {

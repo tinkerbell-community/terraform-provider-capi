@@ -2,29 +2,29 @@ resource "capi_cluster" "example" {
   name               = "my-cluster"
   kubernetes_version = "v1.31.0"
 
-  infrastructure {
+  infrastructure = {
     provider = "docker"
   }
 
-  bootstrap {
+  bootstrap = {
     provider = "kubeadm"
   }
 
-  control_plane {
+  control_plane = {
     provider      = "kubeadm"
     machine_count = 1
   }
 
-  workers {
+  workers = {
     machine_count = 2
   }
 
-  wait {
+  wait = {
     enabled = true
     timeout = "30m"
   }
 
-  output {
+  output = {
     kubeconfig_path = "/tmp/my-cluster-kubeconfig"
   }
 }

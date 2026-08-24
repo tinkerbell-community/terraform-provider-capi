@@ -643,6 +643,9 @@ func (r *ClusterResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 func (r *ClusterResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	// The id is always the cluster name (see Create), and Read/Update rely on
+	// the name attribute being populated, so seed it here too.
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), req.ID)...)
 }
 
 // UpgradeState migrates v0 (flat) state to v1 (nested).
