@@ -87,6 +87,22 @@ func TestBootstrapper_BMCArmsBootItself(t *testing.T) {
 	}
 }
 
+func TestBootstrapper_AutoAlternatesPayloadAcrossAttempts(t *testing.T) {
+	sim := newSim()
+	sim.faults.hangBoots = 1
+	b, _ := newTestBootstrapper(t, sim, nil)
+	create(t, b)
+	if b.last.hist.BootAttempts != 2 {
+		t.Fatalf("boot attempts = %d, want 2", b.last.hist.BootAttempts)
+	}
+	if b.last.sess.method != BootMethodHTTP {
+		t.Errorf("second attempt should switch to http, got %q", b.last.sess.method)
+	}
+	if sim.count("http-uri:https://factory.example/talos-uki.efi") == 0 {
+		t.Error("expected the UKI to be offered on the second attempt")
+	}
+}
+
 func TestBootstrapper_NoBootMethod(t *testing.T) {
 	sim := newSim()
 	sim.faults.virtualMediaUnsupported = true

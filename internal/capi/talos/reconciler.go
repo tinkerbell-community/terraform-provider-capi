@@ -300,16 +300,25 @@ func (r *reconciler) attachMedia(ctx context.Context) error {
 		r.sess.method = BootMethodHTTP
 		err = httpBoot(ctx)
 	default:
-		if err = virtualMedia(ctx); err == nil {
-			r.sess.method = BootMethodVirtualMedia
+		// Alternate between the two payloads across attempts: firmware that
+		// silently refuses one (an ISO over HTTP boot, say) often takes the
+		// other, and a failed boot reports nothing we could branch on.
+		first, second := virtualMedia, httpBoot
+		firstMethod, secondMethod := BootMethodVirtualMedia, BootMethodHTTP
+		if r.sess.method == BootMethodVirtualMedia && r.sess.images.UKI != "" {
+			first, second = httpBoot, virtualMedia
+			firstMethod, secondMethod = BootMethodHTTP, BootMethodVirtualMedia
+		}
+		if err = first(ctx); err == nil {
+			r.sess.method = firstMethod
 			return nil
 		}
 		if !errors.Is(err, ErrUnsupported) {
 			return err
 		}
-		r.logger.Printf("%s: virtual media unsupported, trying UEFI HTTP boot", r.name)
-		if err = httpBoot(ctx); err == nil {
-			r.sess.method = BootMethodHTTP
+		r.logger.Printf("%s: %s unsupported, trying %s", r.name, firstMethod, secondMethod)
+		if err = second(ctx); err == nil {
+			r.sess.method = secondMethod
 			return nil
 		}
 	}

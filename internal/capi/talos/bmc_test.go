@@ -12,7 +12,12 @@ import (
 	"github.com/bmc-toolbox/bmclib/v2/bmc"
 )
 
+// fakeSession mimics bmclib's metadata behaviour: Open records the provider
+// that connected, and every later operation replaces the metadata with that
+// operation's own (which no longer lists the open connections).
 type fakeSession struct {
+	provider       string // provider name reported by Open; "gofish" when empty
+	failed         map[string]string
 	opened, closed bool
 	power          string
 	powerErr       error
@@ -24,38 +29,57 @@ type fakeSession struct {
 	metadata       bmc.Metadata
 }
 
-func (f *fakeSession) Open(context.Context) error  { f.opened = true; return nil }
+func (f *fakeSession) name() string {
+	if f.provider == "" {
+		return "gofish"
+	}
+	return f.provider
+}
+
+func (f *fakeSession) Open(context.Context) error {
+	f.opened = true
+	f.metadata = bmc.Metadata{SuccessfulOpenConns: []string{f.name()}, ProvidersAttempted: []string{f.name()}}
+	return nil
+}
+
 func (f *fakeSession) Close(context.Context) error { f.closed = true; return nil }
+
+// op replaces the metadata the way bmclib does after each call.
+func (f *fakeSession) op() (bool, error) {
+	f.metadata = bmc.Metadata{SuccessfulProvider: f.name(), ProvidersAttempted: []string{f.name()}, FailedProviderDetail: f.failed}
+	return f.setErr == nil, f.setErr
+}
+
 func (f *fakeSession) GetPowerState(context.Context) (string, error) {
+	_, _ = f.op()
 	return f.power, f.powerErr
 }
 func (f *fakeSession) SetPowerState(_ context.Context, state string) (bool, error) {
 	f.setPowerCalls = append(f.setPowerCalls, state)
-	return f.setErr == nil, f.setErr
+	return f.op()
 }
 func (f *fakeSession) SetBootDevice(_ context.Context, dev string, persistent, efi bool) (bool, error) {
 	f.bootCalls = append(f.bootCalls, dev)
-	return f.setErr == nil, f.setErr
+	return f.op()
 }
 func (f *fakeSession) SetVirtualMedia(_ context.Context, kind, url string) (bool, error) {
 	f.mediaCalls = append(f.mediaCalls, kind+":"+url)
-	return f.setErr == nil, f.setErr
+	return f.op()
 }
 func (f *fakeSession) SetHTTPBootURI(_ context.Context, uri string) (bool, error) {
 	f.httpCalls = append(f.httpCalls, uri)
-	return f.setErr == nil, f.setErr
+	return f.op()
 }
-func (f *fakeSession) PostCode(context.Context) (string, int, error) { return "ok", 0, nil }
-func (f *fakeSession) GetMetadata() bmc.Metadata                     { return f.metadata }
+func (f *fakeSession) PostCode(context.Context) (string, int, error) {
+	_, _ = f.op()
+	return "ok", 0, nil
+}
+func (f *fakeSession) GetMetadata() bmc.Metadata { return f.metadata }
 
 func newTestBMC(s *fakeSession) *BMCLib {
 	b := NewBMCLib(BMCCredentials{Address: "10.0.0.1", Username: "u", Password: "p"}, nil)
 	b.newSession = func() bmcSession { return s }
 	return b
-}
-
-func amtMetadata() bmc.Metadata {
-	return bmc.Metadata{SuccessfulOpenConns: []string{"IntelAMT"}, ProvidersAttempted: []string{"IntelAMT"}}
 }
 
 func TestParseAddress(t *testing.T) {
@@ -124,7 +148,7 @@ func TestBMCLib_PowerCommands(t *testing.T) {
 }
 
 func TestBMCLib_MediaAndBootRedfishStyle(t *testing.T) {
-	s := &fakeSession{metadata: bmc.Metadata{SuccessfulOpenConns: []string{"gofish"}}}
+	s := &fakeSession{provider: "gofish"}
 	b := newTestBMC(s)
 	ctx := context.Background()
 	armed, err := b.InsertMedia(ctx, "https://example.com/talos.iso")
@@ -156,12 +180,12 @@ func TestBMCLib_MediaAndBootRedfishStyle(t *testing.T) {
 }
 
 func TestBMCLib_AMTArmsBootAndClearsViaEject(t *testing.T) {
-	s := &fakeSession{metadata: amtMetadata()}
+	s := &fakeSession{provider: "IntelAMT"}
 	b := newTestBMC(s)
 	ctx := context.Background()
 	armed, err := b.InsertMedia(ctx, "https://example.com/talos.iso")
 	if err != nil || !armed {
-		t.Fatalf("InsertMedia() = armed %v, err %v; want armed", armed, err)
+		t.Fatalf("InsertMedia() = armed %v, err %v; want armed (metadata after the call no longer lists open conns)", armed, err)
 	}
 	armed, err = b.SetHTTPBootURI(ctx, "https://example.com/uki.efi")
 	if err != nil || !armed {
@@ -192,11 +216,9 @@ func TestBMCLib_UnsupportedMapsToErrUnsupported(t *testing.T) {
 
 func TestBMCLib_ErrorCarriesMetadata(t *testing.T) {
 	s := &fakeSession{
-		setErr: errors.New("boom"),
-		metadata: bmc.Metadata{
-			ProvidersAttempted:   []string{"gofish", "ipmitool"},
-			FailedProviderDetail: map[string]string{"gofish": "401", "ipmitool": "timeout"},
-		},
+		provider: "gofish",
+		setErr:   errors.New("boom"),
+		failed:   map[string]string{"gofish": "401", "ipmitool": "timeout"},
 	}
 	err := newTestBMC(s).PowerOn(context.Background())
 	var bmcErr *BMCError
@@ -204,7 +226,7 @@ func TestBMCLib_ErrorCarriesMetadata(t *testing.T) {
 		t.Fatalf("PowerOn() error = %T, want *BMCError", err)
 	}
 	msg := err.Error()
-	for _, want := range []string{"bmc power-on: boom", "gofish, ipmitool", "gofish: 401", "ipmitool: timeout"} {
+	for _, want := range []string{"bmc power-on: boom", "gofish: 401", "ipmitool: timeout"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error %q missing %q", msg, want)
 		}

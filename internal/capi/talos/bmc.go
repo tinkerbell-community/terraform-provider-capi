@@ -86,6 +86,15 @@ type BMCLib struct {
 	provider string
 }
 
+// openSession is an open bmclib session plus what was learned at open time.
+// bmclib overwrites the client metadata after every call, so facts from Open
+// (which provider actually connected) must be captured before any operation.
+type openSession struct {
+	bmcSession
+	// amt is true when the Intel AMT provider serves this session.
+	amt bool
+}
+
 // parseAddress splits "host", "host:port", or "scheme://host[:port]".
 func parseAddress(address string) (host string, port int, scheme string, err error) {
 	address = strings.TrimSpace(address)
@@ -156,8 +165,7 @@ func (b *BMCLib) preferredProvider() string {
 	return b.provider
 }
 
-func (b *BMCLib) rememberProvider(s bmcSession) {
-	conns := s.GetMetadata().SuccessfulOpenConns
+func (b *BMCLib) rememberProvider(conns []string) {
 	if len(conns) != 1 {
 		return
 	}
@@ -169,14 +177,9 @@ func (b *BMCLib) rememberProvider(s bmcSession) {
 	}
 }
 
-// isAMT reports whether the open session is served by the Intel AMT provider.
-func isAMT(s bmcSession) bool {
-	return slices.Contains(s.GetMetadata().SuccessfulOpenConns, intelamt.ProviderName)
-}
-
 // withSession opens a session, runs fn, and closes the session. Errors are
 // annotated with bmclib's provider metadata.
-func (b *BMCLib) withSession(ctx context.Context, op string, fn func(context.Context, bmcSession) error) error {
+func (b *BMCLib) withSession(ctx context.Context, op string, fn func(context.Context, *openSession) error) error {
 	s := b.newSession()
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
@@ -184,16 +187,19 @@ func (b *BMCLib) withSession(ctx context.Context, op string, fn func(context.Con
 	if err := s.Open(ctx); err != nil {
 		return wrapBMCError(op, err, s.GetMetadata())
 	}
-	b.rememberProvider(s)
+	opened := s.GetMetadata().SuccessfulOpenConns
+	b.rememberProvider(opened)
+	sess := &openSession{bmcSession: s, amt: slices.Contains(opened, intelamt.ProviderName)}
 	defer func() {
 		if cerr := s.Close(ctx); cerr != nil {
 			b.logger.Printf("bmc %s: close: %v", op, cerr)
 		}
 	}()
 
-	if err := fn(ctx, s); err != nil {
+	if err := fn(ctx, sess); err != nil {
 		return wrapBMCError(op, err, s.GetMetadata())
 	}
+	b.logger.Printf("bmc %s: %s ok via %s", b.creds.Address, op, s.GetMetadata().SuccessfulProvider)
 	return nil
 }
 
@@ -211,7 +217,7 @@ func wrapBMCError(op string, err error, md bmc.Metadata) error {
 // PowerState reads the BMC-reported power state, normalized to on/off/unknown.
 func (b *BMCLib) PowerState(ctx context.Context) (PowerState, error) {
 	state := PowerUnknown
-	err := b.withSession(ctx, "power-state", func(ctx context.Context, s bmcSession) error {
+	err := b.withSession(ctx, "power-state", func(ctx context.Context, s *openSession) error {
 		raw, err := s.GetPowerState(ctx)
 		if err != nil {
 			return err
@@ -228,7 +234,7 @@ func (b *BMCLib) PowerState(ctx context.Context) (PowerState, error) {
 }
 
 func (b *BMCLib) setPower(ctx context.Context, op, state string) error {
-	return b.withSession(ctx, op, func(ctx context.Context, s bmcSession) error {
+	return b.withSession(ctx, op, func(ctx context.Context, s *openSession) error {
 		_, err := s.SetPowerState(ctx, state)
 		return err
 	})
@@ -247,7 +253,7 @@ func (b *BMCLib) PowerCycle(ctx context.Context) error {
 
 // SetBootDevice sets the next-boot (or persistent) boot device.
 func (b *BMCLib) SetBootDevice(ctx context.Context, dev BootDevice, persistent, efi bool) error {
-	return b.withSession(ctx, "set-boot-device", func(ctx context.Context, s bmcSession) error {
+	return b.withSession(ctx, "set-boot-device", func(ctx context.Context, s *openSession) error {
 		_, err := s.SetBootDevice(ctx, string(dev), persistent, efi)
 		return err
 	})
@@ -257,12 +263,12 @@ func (b *BMCLib) SetBootDevice(ctx context.Context, dev BootDevice, persistent, 
 // one-shot UEFI HTTPS boot of the image, so it reports armed.
 func (b *BMCLib) InsertMedia(ctx context.Context, isoURL string) (bool, error) {
 	var armed bool
-	err := b.withSession(ctx, "insert-media", func(ctx context.Context, s bmcSession) error {
+	err := b.withSession(ctx, "insert-media", func(ctx context.Context, s *openSession) error {
 		_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, isoURL)
 		if err != nil {
 			return err
 		}
-		armed = isAMT(s)
+		armed = s.amt
 		return nil
 	})
 	return armed, err
@@ -270,7 +276,7 @@ func (b *BMCLib) InsertMedia(ctx context.Context, isoURL string) (bool, error) {
 
 // EjectMedia detaches virtual CD media (on Intel AMT: clears the armed boot).
 func (b *BMCLib) EjectMedia(ctx context.Context) error {
-	return b.withSession(ctx, "eject-media", func(ctx context.Context, s bmcSession) error {
+	return b.withSession(ctx, "eject-media", func(ctx context.Context, s *openSession) error {
 		_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, "")
 		return err
 	})
@@ -281,8 +287,8 @@ func (b *BMCLib) EjectMedia(ctx context.Context) error {
 // is the same as ejecting.
 func (b *BMCLib) SetHTTPBootURI(ctx context.Context, uri string) (bool, error) {
 	var armed bool
-	err := b.withSession(ctx, "set-http-boot-uri", func(ctx context.Context, s bmcSession) error {
-		if uri == "" && isAMT(s) {
+	err := b.withSession(ctx, "set-http-boot-uri", func(ctx context.Context, s *openSession) error {
+		if uri == "" && s.amt {
 			_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, "")
 			return err
 		}
@@ -290,7 +296,7 @@ func (b *BMCLib) SetHTTPBootURI(ctx context.Context, uri string) (bool, error) {
 		if err != nil {
 			return err
 		}
-		armed = uri != "" && isAMT(s)
+		armed = uri != "" && s.amt
 		return nil
 	})
 	return armed, err
@@ -299,7 +305,7 @@ func (b *BMCLib) SetHTTPBootURI(ctx context.Context, uri string) (bool, error) {
 // PostCode returns the BIOS POST code as a diagnostic string.
 func (b *BMCLib) PostCode(ctx context.Context) (string, error) {
 	var out string
-	err := b.withSession(ctx, "post-code", func(ctx context.Context, s bmcSession) error {
+	err := b.withSession(ctx, "post-code", func(ctx context.Context, s *openSession) error {
 		status, code, err := s.PostCode(ctx)
 		if err != nil {
 			return err
