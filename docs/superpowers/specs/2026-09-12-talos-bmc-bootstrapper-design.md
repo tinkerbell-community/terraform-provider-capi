@@ -140,8 +140,9 @@ follows the existing extractor pattern.
 
 ### 3.4 Status
 
-`status.bootstrap_cluster` holds the bootstrap machine hostname when the Talos bootstrapper is
-used. No other status field changes. No Talos secret, talosconfig, or bootstrap kubeconfig is
+`status.bootstrap_cluster` holds the manager's bootstrap cluster name (`<name>-bootstrap`)
+exactly as it does for kind, and is null after the pivot deletes the bootstrap cluster. No other
+status field changes. No Talos secret, talosconfig, or bootstrap kubeconfig is
 stored in state.
 
 ## 4. Wiring into the existing manager
@@ -204,7 +205,6 @@ type BMC interface {
     PowerOff(ctx context.Context) error          // hard off
     PowerCycle(ctx context.Context) error
     SetBootDevice(ctx context.Context, dev BootDevice, persistent, efi bool) error
-    BootOverride(ctx context.Context) (*BootOverride, error) // nil, ErrUnsupported when the provider lacks it
     InsertMedia(ctx context.Context, isoURL string) error     // SetVirtualMedia("CD", url)
     EjectMedia(ctx context.Context) error                     // SetVirtualMedia("CD", "")
     SetHTTPBootURI(ctx context.Context, uri string) error
@@ -252,7 +252,6 @@ a configured node is reported as `Foreign`, which is correct: it cannot be ours.
 ```go
 type Observation struct {
     Power        PowerState      // On, Off, Unknown
-    BootOverride *BootOverride   // nil when unsupported or unreadable
     Talos        TalosState      // Unreachable, Maintenance, Ours, Foreign
     Etcd         EtcdState       // Unknown, NotBootstrapped, Bootstrapped (only meaningful when Ours)
     Kubernetes   K8sState        // Unreachable, Reachable, NodeReady
