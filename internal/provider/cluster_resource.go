@@ -634,7 +634,12 @@ func (r *ClusterResource) Create(ctx context.Context, req resource.CreateRequest
 		}
 	}
 
-	result, err := r.manager.CreateCluster(ctx, *createOpts)
+	mgr, d := r.managerFor(ctx, &data)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	result, err := mgr.CreateCluster(ctx, *createOpts)
 	if err != nil {
 		resp.Diagnostics.AddError("Cluster Creation Error", fmt.Sprintf("Failed to create cluster: %s", err))
 		return
@@ -725,7 +730,12 @@ func (r *ClusterResource) Update(ctx context.Context, req resource.UpdateRequest
 	reconcileOpts.SkipInit = true
 	reconcileOpts.SelfManaged = false
 
-	result, err := r.manager.CreateCluster(ctx, *reconcileOpts)
+	mgr, d := r.managerFor(ctx, &plan)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	result, err := mgr.CreateCluster(ctx, *reconcileOpts)
 	if err != nil {
 		resp.Diagnostics.AddError("Cluster Update Error", fmt.Sprintf("Failed to reconcile cluster: %s", err))
 		return
@@ -771,6 +781,13 @@ func (r *ClusterResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if status != nil && !status.BootstrapCluster.IsNull() {
 		deleteOpts.DeleteBootstrap = true
 		deleteOpts.BootstrapName = status.BootstrapCluster.ValueString()
+	}
+
+	// A Talos bootstrap node is reset and released right after the pivot, and
+	// CAPT may have reclaimed it into the workload cluster since. Never touch
+	// it on destroy.
+	if talosCfg, _ := buildTalosBootstrapConfig(ctx, &data); talosCfg != nil {
+		deleteOpts.DeleteBootstrap = false
 	}
 
 	if mgmtKubeconfig != "" {

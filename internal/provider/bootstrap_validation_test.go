@@ -16,17 +16,14 @@ import (
 
 // --- builders ---
 
-func testTalosModel(ctx context.Context, t *testing.T, version string, image *TalosImageModel, patches []string) *TalosModel {
+func testTalosModel(ctx context.Context, t *testing.T, image *TalosImageModel, patches []string) *TalosModel {
 	t.Helper()
 	tm := &TalosModel{
-		Version:       types.StringValue(version),
+		Version:       types.StringValue("v1.13.6"),
 		Architecture:  types.StringValue("amd64"),
 		Endpoint:      types.StringNull(),
 		Image:         types.ObjectNull(talosImageAttrTypes()),
 		ConfigPatches: types.ListNull(types.StringType),
-	}
-	if version == "" {
-		tm.Version = types.StringNull()
 	}
 	if image != nil {
 		v, d := types.ObjectValueFrom(ctx, talosImageAttrTypes(), *image)
@@ -209,20 +206,20 @@ func TestValidateManagementBootstrap_UnknownType(t *testing.T) {
 
 func TestValidateManagementBootstrap_TalosRequiresMachine(t *testing.T) {
 	ctx := context.Background()
-	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "", nil, testTalosModel(ctx, t, "v1.13.6", nil, nil), nil), goodMachine)
+	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "", nil, testTalosModel(ctx, t, nil, nil), nil), goodMachine)
 	assertErrorContains(t, runValidate(t, data), "machine is required")
 }
 
 func TestValidateManagementBootstrap_TalosMachineMustExist(t *testing.T) {
 	ctx := context.Background()
-	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-9", nil, testTalosModel(ctx, t, "v1.13.6", nil, nil), nil), goodMachine)
+	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-9", nil, testTalosModel(ctx, t, nil, nil), nil), goodMachine)
 	assertErrorContains(t, runValidate(t, data), "does not match any inventory.machine")
 }
 
 func TestValidateManagementBootstrap_TalosMachineNeedsBMCAndDisk(t *testing.T) {
 	ctx := context.Background()
 	bare := []testMachine{{hostname: "cp-1", ip: "10.0.0.5", mac: "aa:bb:cc:dd:ee:01"}}
-	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, testTalosModel(ctx, t, "v1.13.6", nil, nil), nil), bare)
+	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, testTalosModel(ctx, t, nil, nil), nil), bare)
 	diags := runValidate(t, data)
 	assertErrorContains(t, diags, "bmc")
 	assertErrorContains(t, diags, "disk.device")
@@ -237,7 +234,7 @@ func TestValidateManagementBootstrap_TalosRequiresVersion(t *testing.T) {
 func TestValidateManagementBootstrap_InvalidBoot(t *testing.T) {
 	ctx := context.Background()
 	boot := &BootModel{Method: types.StringValue("pxe"), Timeout: types.StringValue("soon"), Attempts: types.Int64Value(0)}
-	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", boot, testTalosModel(ctx, t, "v1.13.6", nil, nil), nil), goodMachine)
+	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", boot, testTalosModel(ctx, t, nil, nil), nil), goodMachine)
 	diags := runValidate(t, data)
 	assertErrorContains(t, diags, "boot.method")
 	assertErrorContains(t, diags, "boot.timeout")
@@ -246,7 +243,7 @@ func TestValidateManagementBootstrap_InvalidBoot(t *testing.T) {
 
 func TestValidateManagementBootstrap_InvalidArchitecture(t *testing.T) {
 	ctx := context.Background()
-	tm := testTalosModel(ctx, t, "v1.13.6", nil, nil)
+	tm := testTalosModel(ctx, t, nil, nil)
 	tm.Architecture = types.StringValue("riscv64")
 	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, tm, nil), goodMachine)
 	assertErrorContains(t, runValidate(t, data), "architecture")
@@ -265,7 +262,7 @@ func TestValidateManagementBootstrap_ImageRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, testTalosModel(ctx, t, "v1.13.6", tc.img, nil), nil), goodMachine)
+			data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, testTalosModel(ctx, t, tc.img, nil), nil), goodMachine)
 			assertErrorContains(t, runValidate(t, data), tc.want)
 		})
 	}
@@ -273,7 +270,7 @@ func TestValidateManagementBootstrap_ImageRules(t *testing.T) {
 
 func TestValidateManagementBootstrap_InvalidPatchYAML(t *testing.T) {
 	ctx := context.Background()
-	tm := testTalosModel(ctx, t, "v1.13.6", nil, []string{"machine: [broken"})
+	tm := testTalosModel(ctx, t, nil, []string{"machine: [broken"})
 	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, tm, nil), goodMachine)
 	assertErrorContains(t, runValidate(t, data), "config_patches[0]")
 }
@@ -287,7 +284,7 @@ func TestValidateManagementBootstrap_HelmRules(t *testing.T) {
 		}),
 		Manifests: types.ListNull(types.StringType),
 	}
-	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, testTalosModel(ctx, t, "v1.13.6", nil, nil), addons), goodMachine)
+	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", nil, testTalosModel(ctx, t, nil, nil), addons), goodMachine)
 	diags := runValidate(t, data)
 	assertErrorContains(t, diags, "duplicate")
 	assertErrorContains(t, diags, "timeout")
@@ -298,9 +295,9 @@ func TestValidateManagementBootstrap_Valid(t *testing.T) {
 	ctx := context.Background()
 	boot := &BootModel{Method: types.StringValue("auto"), Timeout: types.StringValue("15m"), Attempts: types.Int64Value(3)}
 	img := testImageModel(ctx, t, "", "", "", []string{"iscsi-tools"})
-	tm := testTalosModel(ctx, t, "v1.13.6", img, []string{"cluster:\n  network:\n    cni:\n      name: none\n"})
+	tm := testTalosModel(ctx, t, img, []string{"cluster:\n  network:\n    cni:\n      name: none\n"})
 	addons := &BootstrapAddonsModel{
-		Helm:      testHelmList(ctx, t, []HelmReleaseModel{helmRel("cilium", "kube-system", "oci://quay.io/cilium/charts/cilium", "10m", "kubeProxyReplacement: true\n")}),
+		Helm:      testHelmList(ctx, t, []HelmReleaseModel{helmRel("cert-manager", "cert-manager", "oci://quay.io/jetstack/charts/cert-manager", "10m", "crds:\n  enabled: true\n")}),
 		Manifests: types.ListNull(types.StringType),
 	}
 	data := talosTestData(ctx, t, buildTestBootstrap(ctx, t, "talos", "cp-1", boot, tm, addons), goodMachine)

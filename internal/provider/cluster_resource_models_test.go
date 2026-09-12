@@ -69,20 +69,20 @@ func TestClusterResource_SchemaRequiredAttributes(t *testing.T) {
 	r.Schema(ctx, req, resp)
 
 	// name is required
-	nameAttr := resp.Schema.Attributes["name"].(schema.StringAttribute)
-	if !nameAttr.Required {
+	nameAttr, ok := resp.Schema.Attributes["name"].(schema.StringAttribute)
+	if !ok || !nameAttr.Required {
 		t.Error("name should be Required")
 	}
 
 	// infrastructure is required
-	infraAttr := resp.Schema.Attributes["infrastructure"].(schema.SingleNestedAttribute)
-	if !infraAttr.Required {
+	infraAttr, ok := resp.Schema.Attributes["infrastructure"].(schema.SingleNestedAttribute)
+	if !ok || !infraAttr.Required {
 		t.Error("infrastructure should be Required")
 	}
 
 	// bootstrap is optional
-	bsAttr := resp.Schema.Attributes["bootstrap"].(schema.SingleNestedAttribute)
-	if !bsAttr.Optional {
+	bsAttr, ok := resp.Schema.Attributes["bootstrap"].(schema.SingleNestedAttribute)
+	if !ok || !bsAttr.Optional {
 		t.Error("bootstrap should be Optional")
 	}
 }
@@ -94,8 +94,8 @@ func TestClusterResource_SchemaStatusComputed(t *testing.T) {
 	resp := &resource.SchemaResponse{}
 	r.Schema(ctx, req, resp)
 
-	statusAttr := resp.Schema.Attributes["status"].(schema.SingleNestedAttribute)
-	if !statusAttr.Computed {
+	statusAttr, ok := resp.Schema.Attributes["status"].(schema.SingleNestedAttribute)
+	if !ok || !statusAttr.Computed {
 		t.Error("status should be Computed")
 	}
 	if statusAttr.Optional {
