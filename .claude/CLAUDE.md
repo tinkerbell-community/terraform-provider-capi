@@ -304,6 +304,26 @@ Groups all attributes related to HOW the cluster is managed: management cluster 
 - `namespace` — immutable (RequiresReplace)
 - `skip_init` — mutable (only affects initialization behavior)
 
+**`management.bootstrap` — transient bootstrap cluster:**
+
+```go
+"bootstrap": schema.SingleNestedAttribute{
+    Optional: true,
+    PlanModifiers: []planmodifier.Object{objectplanmodifier.RequiresReplace()},
+    Attributes: map[string]schema.Attribute{
+        "type":    // "kind" (default) | "talos"
+        "machine": // inventory.machine[].hostname; required for talos
+        "boot":    // { method: auto|virtual_media|http, timeout: "15m", attempts: 3 }
+        "talos":   // { version, architecture, endpoint, image { factory, schematic, extensions, kernel_args, iso, installer }, config_patches }
+        "addons":  // { helm [ { name, namespace, chart, repository, version, values, timeout } ], manifests }
+    },
+},
+```
+
+The Talos bootstrapper (`internal/capi/talos`) implements `capi.Bootstrapper`. It is an
+observed-state reconciler over bmclib and the Talos machinery API; nothing about the node
+is stored in Terraform state. See `docs/superpowers/specs/2026-09-12-talos-bmc-bootstrapper-design.md`.
+
 ### 3.3 `infrastructure` — Infrastructure Provider
 
 ```go

@@ -17,29 +17,29 @@ resource "capi_cluster" "example" {
   name               = "my-cluster"
   kubernetes_version = "v1.31.0"
 
-  infrastructure {
+  infrastructure = {
     provider = "docker"
   }
 
-  bootstrap {
+  bootstrap = {
     provider = "kubeadm"
   }
 
-  control_plane {
+  control_plane = {
     provider      = "kubeadm"
     machine_count = 1
   }
 
-  workers {
+  workers = {
     machine_count = 2
   }
 
-  wait {
+  wait = {
     enabled = true
     timeout = "30m"
   }
 
-  output {
+  output = {
     kubeconfig_path = "/tmp/my-cluster-kubeconfig"
   }
 }
@@ -55,6 +55,7 @@ resource "capi_cluster" "example" {
 
 ### Optional
 
+- `addons` (Attributes List) Addon provider configurations modeled after the cluster-api-operator AddonProvider CRD (`operator.cluster.x-k8s.io/v1alpha2`). Each element installs one addon provider via `clusterctl init`. Customizations (deployment, manager, patches) are applied natively by wrapping the clusterctl client's repository factory — the operator itself is not required. (see [below for nested schema](#nestedatt--addons))
 - `bootstrap` (Attributes) Bootstrap provider configuration (e.g., kubeadm, talos). (see [below for nested schema](#nestedatt--bootstrap))
 - `control_plane` (Attributes) Control plane configuration. (see [below for nested schema](#nestedatt--control_plane))
 - `core` (Attributes) Core CAPI provider configuration. (see [below for nested schema](#nestedatt--core))
@@ -72,23 +73,109 @@ resource "capi_cluster" "example" {
 - `status` (Attributes) Computed cluster status. (see [below for nested schema](#nestedatt--status))
 
 <a id="nestedatt--infrastructure"></a>
-
 ### Nested Schema for `infrastructure`
 
 Required:
 
 - `provider` (String) Infrastructure provider name and optional version (e.g., `docker`, `tinkerbell:v0.5.4`).
 
-<a id="nestedatt--bootstrap"></a>
 
+<a id="nestedatt--addons"></a>
+### Nested Schema for `addons`
+
+Required:
+
+- `provider` (String) Addon provider name and optional version (e.g., `helm:v0.2.12`).
+
+Optional:
+
+- `additional_manifests` (String) Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).
+- `config_variables` (Map of String) Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.
+- `deployment` (Attributes) Deployment customization for the addon provider controller. (see [below for nested schema](#nestedatt--addons--deployment))
+- `fetch_config` (Attributes) Determines how the provider fetches components and metadata. Exactly one of `url` or `oci` must be specified. (see [below for nested schema](#nestedatt--addons--fetch_config))
+- `manager` (Attributes) Controller manager configuration for the addon provider. (see [below for nested schema](#nestedatt--addons--manager))
+- `manifest_patches` (List of String) JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.
+- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--addons--patches))
+- `secret_config_variables` (Map of String, Sensitive) Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.
+
+<a id="nestedatt--addons--deployment"></a>
+### Nested Schema for `addons.deployment`
+
+Optional:
+
+- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--addons--deployment--containers))
+- `node_selector` (Map of String) Node selector labels for pod scheduling.
+- `replicas` (Number) Number of desired pods. Defaults to 1.
+- `service_account_name` (String) Service account name for the provider pod.
+
+<a id="nestedatt--addons--deployment--containers"></a>
+### Nested Schema for `addons.deployment.containers`
+
+Required:
+
+- `name` (String) Container name. Must match an existing container in the deployment.
+
+Optional:
+
+- `args` (Map of String) Extra arguments passed to the container entrypoint. Explicit ManagerSpec values take precedence.
+- `command` (List of String) Override for the container entrypoint command.
+- `image_url` (String) Container image URL override.
+
+
+
+<a id="nestedatt--addons--fetch_config"></a>
+### Nested Schema for `addons.fetch_config`
+
+Optional:
+
+- `oci` (String) OCI artifact reference for fetching provider components (e.g., `oci://ghcr.io/org/provider`).
+- `url` (String) URL for fetching provider components from a remote GitHub repository (e.g., `https://github.com/{owner}/{repo}/releases`).
+
+
+<a id="nestedatt--addons--manager"></a>
+### Nested Schema for `addons.manager`
+
+Optional:
+
+- `additional_args` (Map of String) Additional arguments passed as container args to the controller manager.
+- `feature_gates` (Map of Boolean) Provider-specific feature gates passed as `--feature-gates` to the controller manager.
+- `max_concurrent_reconciles` (Number) Maximum number of concurrent reconciles.
+- `profiler_address` (String) Bind address for the pprof profiler (e.g., `localhost:6060`). Empty disables profiling.
+- `verbosity` (Number) Log verbosity level. Defaults to 1.
+
+
+<a id="nestedatt--addons--patches"></a>
+### Nested Schema for `addons.patches`
+
+Optional:
+
+- `patch` (String) Inline YAML/JSON patch content.
+- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--addons--patches--target))
+
+<a id="nestedatt--addons--patches--target"></a>
+### Nested Schema for `addons.patches.target`
+
+Optional:
+
+- `group` (String) API group of the target.
+- `kind` (String) Kind of the target.
+- `label_selector` (String) Label selector expression.
+- `name` (String) Name of the target.
+- `namespace` (String) Namespace of the target.
+- `version` (String) API version of the target.
+
+
+
+
+<a id="nestedatt--bootstrap"></a>
 ### Nested Schema for `bootstrap`
 
 Required:
 
 - `provider` (String) Bootstrap provider name and optional version (e.g., `kubeadm:v1.12.2`, `talos:v0.6.7`).
 
-<a id="nestedatt--control_plane"></a>
 
+<a id="nestedatt--control_plane"></a>
 ### Nested Schema for `control_plane`
 
 Optional:
@@ -96,16 +183,16 @@ Optional:
 - `machine_count` (Number) Number of control plane machines.
 - `provider` (String) Control plane provider name and optional version (e.g., `kubeadm:v1.12.2`, `talos:v0.6.7`).
 
-<a id="nestedatt--core"></a>
 
+<a id="nestedatt--core"></a>
 ### Nested Schema for `core`
 
 Required:
 
 - `provider` (String) Core provider name and version (e.g., `cluster-api:v1.12.2`).
 
-<a id="nestedatt--inventory"></a>
 
+<a id="nestedatt--inventory"></a>
 ### Nested Schema for `inventory`
 
 Optional:
@@ -114,7 +201,6 @@ Optional:
 - `source` (String) Path to a hardware inventory file (CSV or YAML).
 
 <a id="nestedatt--inventory--machine"></a>
-
 ### Nested Schema for `inventory.machine`
 
 Required:
@@ -129,7 +215,6 @@ Optional:
 - `labels` (Map of String) Labels. Use `type=cp` for control plane, `type=worker` for workers.
 
 <a id="nestedatt--inventory--machine--network"></a>
-
 ### Nested Schema for `inventory.machine.network`
 
 Required:
@@ -144,8 +229,8 @@ Optional:
 - `nameservers` (List of String) DNS nameservers.
 - `vlan_id` (String) VLAN ID.
 
-<a id="nestedatt--inventory--machine--bmc"></a>
 
+<a id="nestedatt--inventory--machine--bmc"></a>
 ### Nested Schema for `inventory.machine.bmc`
 
 Required:
@@ -154,35 +239,111 @@ Required:
 - `password` (String, Sensitive) BMC password.
 - `username` (String) BMC username.
 
-<a id="nestedatt--inventory--machine--disk"></a>
 
+<a id="nestedatt--inventory--machine--disk"></a>
 ### Nested Schema for `inventory.machine.disk`
 
 Required:
 
 - `device` (String) Disk device path.
 
-<a id="nestedatt--management"></a>
 
+
+
+<a id="nestedatt--management"></a>
 ### Nested Schema for `management`
 
 Optional:
 
+- `bootstrap` (Attributes) Transient bootstrap cluster configuration. `type = "kind"` (default) creates a kind cluster. `type = "talos"` provisions one `inventory.machine` entry as a single-node Talos cluster through its BMC. The bootstrap cluster is torn down after the self-managed pivot and nothing about it is kept in state. (see [below for nested schema](#nestedatt--management--bootstrap))
 - `kubeconfig` (String) Path to the kubeconfig for an existing management cluster. If not provided, a bootstrap cluster (kind) is created automatically.
 - `namespace` (String) Namespace on the management cluster where CAPI resources are created.
 - `self_managed` (Boolean) Pivot CAPI management from bootstrap to workload cluster (clusterctl move). Required `true` for Tinkerbell provider.
 - `skip_init` (Boolean) Skip running clusterctl init on the management cluster. Use when CAPI providers are already installed.
 
-<a id="nestedatt--output"></a>
+<a id="nestedatt--management--bootstrap"></a>
+### Nested Schema for `management.bootstrap`
 
+Optional:
+
+- `addons` (Attributes) Helm releases and manifests installed on the bootstrap cluster before CAPI is initialized. Install a CNI such as Cilium here. (see [below for nested schema](#nestedatt--management--bootstrap--addons))
+- `boot` (Attributes) How the node is booted into the Talos installer. (see [below for nested schema](#nestedatt--management--bootstrap--boot))
+- `machine` (String) Hostname of the `inventory.machine` entry to use as the bootstrap node. Its `bmc`, `network.ip_address`, and `disk.device` are used. Required when `type = "talos"`.
+- `talos` (Attributes) Talos version, images, and machine config patches. (see [below for nested schema](#nestedatt--management--bootstrap--talos))
+- `type` (String) Bootstrap cluster type: `kind` or `talos`.
+
+<a id="nestedatt--management--bootstrap--addons"></a>
+### Nested Schema for `management.bootstrap.addons`
+
+Optional:
+
+- `helm` (Attributes List) Helm releases installed in order. (see [below for nested schema](#nestedatt--management--bootstrap--addons--helm))
+- `manifests` (List of String) Raw YAML manifests applied after the Helm releases.
+
+<a id="nestedatt--management--bootstrap--addons--helm"></a>
+### Nested Schema for `management.bootstrap.addons.helm`
+
+Required:
+
+- `chart` (String) `oci://` chart reference, or a chart name used with `repository`.
+- `name` (String) Release name.
+- `namespace` (String) Release namespace (created if missing).
+
+Optional:
+
+- `repository` (String) HTTP chart repository URL. Ignored for `oci://` charts.
+- `timeout` (String) Install timeout as a Go duration.
+- `values` (String) Chart values as a YAML string.
+- `version` (String) Chart version. Latest when empty.
+
+
+
+<a id="nestedatt--management--bootstrap--boot"></a>
+### Nested Schema for `management.bootstrap.boot`
+
+Optional:
+
+- `attempts` (Number) Boot attempts before giving up.
+- `method` (String) `auto` (virtual media, then UEFI HTTP boot), `virtual_media`, or `http`.
+- `timeout` (String) Per-attempt boot and install timeout as a Go duration (e.g. `15m`).
+
+
+<a id="nestedatt--management--bootstrap--talos"></a>
+### Nested Schema for `management.bootstrap.talos`
+
+Optional:
+
+- `architecture` (String) `amd64` or `arm64`.
+- `config_patches` (List of String) Machine config patches (YAML strings) applied in order after the built-in install patch.
+- `endpoint` (String) Cluster endpoint written into the machine config. Defaults to `https://<machine ip>:6443`.
+- `image` (Attributes) Image Factory schematic or explicit image overrides. (see [below for nested schema](#nestedatt--management--bootstrap--talos--image))
+- `version` (String) Talos version (e.g. `v1.13.6`). Required when `type = "talos"`.
+
+<a id="nestedatt--management--bootstrap--talos--image"></a>
+### Nested Schema for `management.bootstrap.talos.image`
+
+Optional:
+
+- `extensions` (List of String) Official system extension names for a new schematic.
+- `factory` (String) Image Factory base URL.
+- `installer` (String) Explicit installer image reference. Must be set together with `iso`.
+- `iso` (String) Explicit ISO URL. Must be set together with `installer`; disables UEFI HTTP boot.
+- `kernel_args` (List of String) Extra kernel arguments for a new schematic.
+- `schematic` (String) Precomputed schematic id. Conflicts with `extensions`, `kernel_args`, `iso`, and `installer`.
+
+
+
+
+
+<a id="nestedatt--output"></a>
 ### Nested Schema for `output`
 
 Optional:
 
 - `kubeconfig_path` (String) File path for the workload cluster kubeconfig.
 
-<a id="nestedatt--wait"></a>
 
+<a id="nestedatt--wait"></a>
 ### Nested Schema for `wait`
 
 Optional:
@@ -190,16 +351,16 @@ Optional:
 - `enabled` (Boolean) Wait for readiness.
 - `timeout` (String) Max wait time (Go duration, e.g., `30m`). Default: `30m`.
 
-<a id="nestedatt--workers"></a>
 
+<a id="nestedatt--workers"></a>
 ### Nested Schema for `workers`
 
 Optional:
 
 - `machine_count` (Number) Number of worker machines.
 
-<a id="nestedatt--status"></a>
 
+<a id="nestedatt--status"></a>
 ### Nested Schema for `status`
 
 Read-Only:

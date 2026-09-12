@@ -1,0 +1,14 @@
+# Talos ships with Flannel and kube-proxy. Disable both so the Cilium Helm
+# release in the example owns networking, with kube-proxy replacement via
+# KubePrism.
+cluster:
+  network:
+    cni:
+      name: none
+  proxy:
+    disabled: true
+machine:
+  features:
+    kubePrism:
+      enabled: true
+      port: 7445

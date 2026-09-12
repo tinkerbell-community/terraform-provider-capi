@@ -40,21 +40,21 @@ on the whole object. `type` defaults to `kind`, so existing configurations are u
 schema version does not change.
 
 ```hcl
-management {
+management = {
   self_managed = true
-  bootstrap {
+  bootstrap = {
     type    = "talos"            # "kind" (default) | "talos"
     machine = "cp-1"             # inventory.machine[].hostname
-    boot {
+    boot = {
       method   = "auto"          # auto | virtual_media | http
       timeout  = "15m"           # per boot attempt, Go duration
       attempts = 3               # boot attempts before giving up
     }
-    talos {
+    talos = {
       version      = "v1.13.6"
       architecture = "amd64"     # amd64 (default) | arm64
       endpoint     = "https://10.1.1.100:6443"   # optional, default https://<machine ip>:6443
-      image {
+      image = {
         factory     = "https://factory.talos.dev"  # optional
         schematic   = "<sha256 id>"                # optional precomputed schematic id
         extensions  = ["iscsi-tools", "nvme-cli"]  # official extension names
@@ -64,7 +64,7 @@ management {
       }
       config_patches = [ file("cni-none.yaml") ]   # strategic merge YAML, applied in order
     }
-    addons {
+    addons = {
       helm = [
         {
           name       = "cilium"
