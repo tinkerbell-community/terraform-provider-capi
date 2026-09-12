@@ -22,6 +22,7 @@ require (
 
 require (
 	al.essio.dev/pkg/shellescape v1.6.0 // indirect
+	cel.dev/expr v0.25.2 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/Jeffail/gabs/v2 v2.7.0 // indirect
@@ -35,6 +36,7 @@ require (
 	github.com/ProtonMail/gopenpgp/v2 v2.10.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/armon/go-radix v1.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -57,6 +59,7 @@ require (
 	github.com/drone/envsubst/v2 v2.0.0-20210730161058-179042472c46 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
+	github.com/evanphx/json-patch v5.9.11+incompatible // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
@@ -80,6 +83,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/google/cel-go v0.29.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-github/v82 v82.0.0 // indirect
@@ -112,12 +116,17 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jacobweinstock/iamt v0.0.0-20260519145820-aa85bf8aad4e // indirect
 	github.com/jacobweinstock/registrar v0.4.7 // indirect
+	github.com/jsimonetti/rtnetlink/v2 v2.2.1-0.20260317095713-310581b9c6ac // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.22 // indirect
+	github.com/mdlayher/ethtool v0.5.1 // indirect
+	github.com/mdlayher/genetlink v1.3.2 // indirect
+	github.com/mdlayher/netlink v1.9.0 // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
@@ -147,6 +156,7 @@ require (
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/sasha-s/go-deadlock v0.3.5 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
@@ -154,6 +164,7 @@ require (
 	github.com/siderolabs/gen v0.8.7 // indirect
 	github.com/siderolabs/go-api-signature v0.3.12 // indirect
 	github.com/siderolabs/go-pointer v1.0.1 // indirect
+	github.com/siderolabs/net v0.4.0 // indirect
 	github.com/siderolabs/protoenc v0.2.4 // indirect
 	github.com/sirupsen/logrus v1.10.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
