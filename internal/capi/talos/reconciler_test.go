@@ -71,6 +71,22 @@ func TestBootstrapper_FallsBackToHTTPBoot(t *testing.T) {
 	}
 }
 
+func TestBootstrapper_BMCArmsBootItself(t *testing.T) {
+	sim := newSim()
+	sim.faults.armsBoot = true
+	b, _ := newTestBootstrapper(t, sim, nil)
+	create(t, b)
+	if got := sim.count("boot-device:cdrom"); got != 0 {
+		t.Errorf("SetBootDevice(cdrom) called %d times; it must be skipped when the BMC armed the boot", got)
+	}
+	if b.last.hist.BootAttempts != 1 {
+		t.Errorf("boot attempts = %d, want 1", b.last.hist.BootAttempts)
+	}
+	if sim.count("boot-device:disk") != 0 {
+		t.Error("no reboot-to-disk should be needed")
+	}
+}
+
 func TestBootstrapper_NoBootMethod(t *testing.T) {
 	sim := newSim()
 	sim.faults.virtualMediaUnsupported = true

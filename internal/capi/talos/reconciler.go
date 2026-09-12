@@ -254,12 +254,22 @@ func (r *reconciler) bootInstaller(ctx context.Context, obs Observation) error {
 // attachMedia attaches installer media by the configured method. A pinned
 // method that the BMC lacks, or auto with no usable method, is ErrNoBootMethod.
 func (r *reconciler) attachMedia(ctx context.Context) error {
+	// A BMC that arms the boot itself when media is attached (Intel AMT) must
+	// not get a SetBootDevice afterwards: that would replace the armed boot.
 	virtualMedia := func(ctx context.Context) error {
 		if r.sess.images.ISO == "" {
 			return fmt.Errorf("virtual media: no ISO URL: %w", ErrUnsupported)
 		}
-		if err := r.bmcDo(ctx, func(ctx context.Context) error { return r.bmc.InsertMedia(ctx, r.sess.images.ISO) }); err != nil {
+		var armed bool
+		if err := r.bmcDo(ctx, func(ctx context.Context) error {
+			var err error
+			armed, err = r.bmc.InsertMedia(ctx, r.sess.images.ISO)
 			return err
+		}); err != nil {
+			return err
+		}
+		if armed {
+			return nil
 		}
 		return r.bmcDo(ctx, func(ctx context.Context) error { return r.bmc.SetBootDevice(ctx, BootDeviceCDROM, false, true) })
 	}
@@ -267,8 +277,16 @@ func (r *reconciler) attachMedia(ctx context.Context) error {
 		if r.sess.images.UKI == "" {
 			return fmt.Errorf("uefi http boot: no UKI URL: %w", ErrUnsupported)
 		}
-		if err := r.bmcDo(ctx, func(ctx context.Context) error { return r.bmc.SetHTTPBootURI(ctx, r.sess.images.UKI) }); err != nil {
+		var armed bool
+		if err := r.bmcDo(ctx, func(ctx context.Context) error {
+			var err error
+			armed, err = r.bmc.SetHTTPBootURI(ctx, r.sess.images.UKI)
 			return err
+		}); err != nil {
+			return err
+		}
+		if armed {
+			return nil
 		}
 		return r.bmcDo(ctx, func(ctx context.Context) error { return r.bmc.SetBootDevice(ctx, BootDeviceUEFIHTTP, false, true) })
 	}
@@ -379,7 +397,10 @@ func (r *reconciler) detachMedia(ctx context.Context) {
 	if err := r.bmcDo(ctx, r.bmc.EjectMedia); err != nil && !errors.Is(err, ErrUnsupported) {
 		r.logger.Printf("%s: eject media: %v", r.name, err)
 	}
-	if err := r.bmcDo(ctx, func(ctx context.Context) error { return r.bmc.SetHTTPBootURI(ctx, "") }); err != nil && !errors.Is(err, ErrUnsupported) {
+	if err := r.bmcDo(ctx, func(ctx context.Context) error {
+		_, err := r.bmc.SetHTTPBootURI(ctx, "")
+		return err
+	}); err != nil && !errors.Is(err, ErrUnsupported) {
 		r.logger.Printf("%s: clear http boot uri: %v", r.name, err)
 	}
 	r.hist.MediaAttached = false

@@ -8,15 +8,25 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	bmclib "github.com/bmc-toolbox/bmclib/v2"
 	"github.com/bmc-toolbox/bmclib/v2/bmc"
 	bmclibErrs "github.com/bmc-toolbox/bmclib/v2/errors"
+	"github.com/bmc-toolbox/bmclib/v2/providers/intelamt"
 )
 
 // BMCCredentials identifies and authenticates to a machine's BMC.
+//
+// Address accepts "host", "host:port", or "scheme://host[:port]". A port
+// applies to the Redfish and Intel AMT providers; a scheme applies to Intel
+// AMT (its default is http on 16992, while TLS-enabled AMT listens on 16993).
 type BMCCredentials struct {
 	Address  string
 	Username string
@@ -31,9 +41,15 @@ type BMC interface {
 	PowerOff(ctx context.Context) error
 	PowerCycle(ctx context.Context) error
 	SetBootDevice(ctx context.Context, dev BootDevice, persistent, efi bool) error
-	InsertMedia(ctx context.Context, isoURL string) error
+	// InsertMedia attaches an ISO. armed reports that the BMC already
+	// selected the media as the next boot (Intel AMT's one-click recovery
+	// does), in which case SetBootDevice must not be called: it would replace
+	// the armed boot.
+	InsertMedia(ctx context.Context, isoURL string) (armed bool, err error)
 	EjectMedia(ctx context.Context) error
-	SetHTTPBootURI(ctx context.Context, uri string) error
+	// SetHTTPBootURI sets the UEFI HTTP boot URI; armed has the same meaning
+	// as for InsertMedia. An empty uri clears it.
+	SetHTTPBootURI(ctx context.Context, uri string) (armed bool, err error)
 	PostCode(ctx context.Context) (string, error)
 }
 
@@ -63,6 +79,45 @@ type BMCLib struct {
 	logger     *log.Logger
 	timeout    time.Duration
 	newSession func() bmcSession
+
+	mu sync.Mutex
+	// provider is the bmclib provider that opened successfully; later
+	// sessions try only that provider instead of every driver.
+	provider string
+}
+
+// parseAddress splits "host", "host:port", or "scheme://host[:port]".
+func parseAddress(address string) (host string, port int, scheme string, err error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return "", 0, "", errors.New("bmc address is empty")
+	}
+	if strings.Contains(address, "://") {
+		u, err := url.Parse(address)
+		if err != nil {
+			return "", 0, "", fmt.Errorf("parsing bmc address %q: %w", address, err)
+		}
+		scheme = strings.ToLower(u.Scheme)
+		host = u.Hostname()
+		if p := u.Port(); p != "" {
+			port, err = strconv.Atoi(p)
+			if err != nil {
+				return "", 0, "", fmt.Errorf("parsing bmc port in %q: %w", address, err)
+			}
+		}
+		if host == "" {
+			return "", 0, "", fmt.Errorf("bmc address %q has no host", address)
+		}
+		return host, port, scheme, nil
+	}
+	if h, p, err := net.SplitHostPort(address); err == nil {
+		port, err = strconv.Atoi(p)
+		if err != nil {
+			return "", 0, "", fmt.Errorf("parsing bmc port in %q: %w", address, err)
+		}
+		return h, port, "", nil
+	}
+	return address, 0, "", nil
 }
 
 // NewBMCLib returns a BMC backed by bmclib with provider autodetection.
@@ -71,11 +126,52 @@ func NewBMCLib(creds BMCCredentials, logger *log.Logger) *BMCLib {
 		logger = log.New(log.Writer(), "[talos-bmc] ", log.LstdFlags)
 	}
 	b := &BMCLib{creds: creds, logger: logger, timeout: defaultBMCTimeout}
+
+	host, port, scheme, err := parseAddress(creds.Address)
+	if err != nil {
+		// Let Open fail with the real message; keep the raw address.
+		host = creds.Address
+	}
+	opts := []bmclib.Option{bmclib.WithPerProviderTimeout(perProviderTimeout)}
+	if port > 0 {
+		opts = append(opts, bmclib.WithIntelAMTPort(uint32(port)), bmclib.WithRedfishPort(strconv.Itoa(port)))
+	}
+	if scheme != "" {
+		opts = append(opts, bmclib.WithIntelAMTHostScheme(scheme))
+	}
+
 	b.newSession = func() bmcSession {
-		return bmclib.NewClient(creds.Address, creds.Username, creds.Password,
-			bmclib.WithPerProviderTimeout(perProviderTimeout))
+		c := bmclib.NewClient(host, creds.Username, creds.Password, opts...)
+		if p := b.preferredProvider(); p != "" {
+			c.Registry.Drivers = c.Registry.For(p)
+		}
+		return c
 	}
 	return b
+}
+
+func (b *BMCLib) preferredProvider() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.provider
+}
+
+func (b *BMCLib) rememberProvider(s bmcSession) {
+	conns := s.GetMetadata().SuccessfulOpenConns
+	if len(conns) != 1 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.provider != conns[0] {
+		b.provider = conns[0]
+		b.logger.Printf("bmc %s: using provider %s for subsequent sessions", b.creds.Address, conns[0])
+	}
+}
+
+// isAMT reports whether the open session is served by the Intel AMT provider.
+func isAMT(s bmcSession) bool {
+	return slices.Contains(s.GetMetadata().SuccessfulOpenConns, intelamt.ProviderName)
 }
 
 // withSession opens a session, runs fn, and closes the session. Errors are
@@ -88,6 +184,7 @@ func (b *BMCLib) withSession(ctx context.Context, op string, fn func(context.Con
 	if err := s.Open(ctx); err != nil {
 		return wrapBMCError(op, err, s.GetMetadata())
 	}
+	b.rememberProvider(s)
 	defer func() {
 		if cerr := s.Close(ctx); cerr != nil {
 			b.logger.Printf("bmc %s: close: %v", op, cerr)
@@ -156,15 +253,22 @@ func (b *BMCLib) SetBootDevice(ctx context.Context, dev BootDevice, persistent, 
 	})
 }
 
-// InsertMedia attaches an ISO as virtual CD media.
-func (b *BMCLib) InsertMedia(ctx context.Context, isoURL string) error {
-	return b.withSession(ctx, "insert-media", func(ctx context.Context, s bmcSession) error {
+// InsertMedia attaches an ISO as virtual CD media. On Intel AMT this arms a
+// one-shot UEFI HTTPS boot of the image, so it reports armed.
+func (b *BMCLib) InsertMedia(ctx context.Context, isoURL string) (bool, error) {
+	var armed bool
+	err := b.withSession(ctx, "insert-media", func(ctx context.Context, s bmcSession) error {
 		_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, isoURL)
-		return err
+		if err != nil {
+			return err
+		}
+		armed = isAMT(s)
+		return nil
 	})
+	return armed, err
 }
 
-// EjectMedia detaches virtual CD media.
+// EjectMedia detaches virtual CD media (on Intel AMT: clears the armed boot).
 func (b *BMCLib) EjectMedia(ctx context.Context) error {
 	return b.withSession(ctx, "eject-media", func(ctx context.Context, s bmcSession) error {
 		_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, "")
@@ -172,12 +276,24 @@ func (b *BMCLib) EjectMedia(ctx context.Context) error {
 	})
 }
 
-// SetHTTPBootURI sets the UEFI HTTP boot URI. An empty uri clears it.
-func (b *BMCLib) SetHTTPBootURI(ctx context.Context, uri string) error {
-	return b.withSession(ctx, "set-http-boot-uri", func(ctx context.Context, s bmcSession) error {
+// SetHTTPBootURI sets the UEFI HTTP boot URI. An empty uri clears it. On
+// Intel AMT a non-empty uri arms a one-shot boot of the image, and clearing
+// is the same as ejecting.
+func (b *BMCLib) SetHTTPBootURI(ctx context.Context, uri string) (bool, error) {
+	var armed bool
+	err := b.withSession(ctx, "set-http-boot-uri", func(ctx context.Context, s bmcSession) error {
+		if uri == "" && isAMT(s) {
+			_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, "")
+			return err
+		}
 		_, err := s.SetHTTPBootURI(ctx, uri)
-		return err
+		if err != nil {
+			return err
+		}
+		armed = uri != "" && isAMT(s)
+		return nil
 	})
+	return armed, err
 }
 
 // PostCode returns the BIOS POST code as a diagnostic string.

@@ -33,6 +33,9 @@ type simFaults struct {
 	hangBoots int
 	// bootstrapErr is returned by the Bootstrap RPC even though etcd starts.
 	bootstrapErr error
+	// armsBoot makes InsertMedia/SetHTTPBootURI arm the next boot themselves,
+	// as Intel AMT does; a later SetBootDevice would then replace the armed boot.
+	armsBoot bool
 }
 
 // simMachine is an in-memory bare-metal machine with a BMC, firmware, a
@@ -45,6 +48,7 @@ type simMachine struct {
 	media       string
 	httpURI     string
 	override    *BootOverride
+	armedMedia  bool   // one-shot boot of media armed by the BMC itself
 	running     string // "off", "hung", "iso", "disk"
 	rebootTicks int
 	pendingBoot bool
@@ -97,6 +101,9 @@ func (s *simMachine) settle() {
 		return
 	}
 	switch {
+	case s.armedMedia && (s.media != "" || s.httpURI != ""):
+		s.armedMedia = false
+		s.running = "iso"
 	case s.override != nil && s.override.Device == BootDeviceCDROM && s.media != "":
 		s.running = "iso"
 	case s.override != nil && s.override.Device == BootDeviceUEFIHTTP && s.httpURI != "":
@@ -158,22 +165,25 @@ func (s *simMachine) SetBootDevice(_ context.Context, dev BootDevice, persistent
 	defer s.mu.Unlock()
 	s.record("boot-device:" + string(dev))
 	s.override = &BootOverride{Device: dev, Persistent: persistent, EFI: efi}
+	// Like AMT, an explicit override replaces whatever the media call armed.
+	s.armedMedia = false
 	return nil
 }
 
-func (s *simMachine) InsertMedia(_ context.Context, iso string) error {
+func (s *simMachine) InsertMedia(_ context.Context, iso string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("insert")
 	if s.faults.virtualMediaUnsupported {
-		return fmt.Errorf("insert: %w", ErrUnsupported)
+		return false, fmt.Errorf("insert: %w", ErrUnsupported)
 	}
 	if s.faults.insertFailures > 0 {
 		s.faults.insertFailures--
-		return errors.New("insert: transient BMC error")
+		return false, errors.New("insert: transient BMC error")
 	}
 	s.media = iso
-	return nil
+	s.armedMedia = s.faults.armsBoot
+	return s.faults.armsBoot, nil
 }
 
 func (s *simMachine) EjectMedia(context.Context) error {
@@ -184,18 +194,24 @@ func (s *simMachine) EjectMedia(context.Context) error {
 		return fmt.Errorf("eject: %w", ErrUnsupported)
 	}
 	s.media = ""
+	s.armedMedia = false
 	return nil
 }
 
-func (s *simMachine) SetHTTPBootURI(_ context.Context, uri string) error {
+func (s *simMachine) SetHTTPBootURI(_ context.Context, uri string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("http-uri:" + uri)
 	if s.faults.httpBootUnsupported {
-		return fmt.Errorf("http boot: %w", ErrUnsupported)
+		return false, fmt.Errorf("http boot: %w", ErrUnsupported)
 	}
 	s.httpURI = uri
-	return nil
+	if uri == "" {
+		s.armedMedia = false
+		return false, nil
+	}
+	s.armedMedia = s.faults.armsBoot
+	return s.faults.armsBoot, nil
 }
 
 func (s *simMachine) PostCode(context.Context) (string, error) { return "sim", nil }

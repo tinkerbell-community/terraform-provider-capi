@@ -5,6 +5,7 @@ package talos
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"testing"
@@ -44,6 +45,18 @@ func TestAcceptance_TalosBootstrap(t *testing.T) {
 		},
 		Boot:  BootConfig{Method: BootMethod(env("CAPI_TALOS_BOOT_METHOD", "auto"))},
 		Talos: TalosConfig{Version: env("CAPI_TALOS_VERSION", "v1.13.6"), Architecture: env("CAPI_TALOS_ARCH", "amd64")},
+	}
+	if s := os.Getenv("CAPI_TALOS_BOOT_TIMEOUT"); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			t.Fatalf("CAPI_TALOS_BOOT_TIMEOUT: %v", err)
+		}
+		cfg.Boot.Timeout = d
+	}
+	if n := os.Getenv("CAPI_TALOS_BOOT_ATTEMPTS"); n != "" {
+		if _, err := fmt.Sscanf(n, "%d", &cfg.Boot.Attempts); err != nil {
+			t.Fatalf("CAPI_TALOS_BOOT_ATTEMPTS: %v", err)
+		}
 	}
 	b := New(cfg, WithLogger(log.New(os.Stderr, "[acceptance] ", log.LstdFlags)))
 

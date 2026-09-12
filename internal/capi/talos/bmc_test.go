@@ -54,6 +54,38 @@ func newTestBMC(s *fakeSession) *BMCLib {
 	return b
 }
 
+func amtMetadata() bmc.Metadata {
+	return bmc.Metadata{SuccessfulOpenConns: []string{"IntelAMT"}, ProvidersAttempted: []string{"IntelAMT"}}
+}
+
+func TestParseAddress(t *testing.T) {
+	for _, tc := range []struct {
+		in     string
+		host   string
+		port   int
+		scheme string
+		bad    bool
+	}{
+		{in: "10.0.0.1", host: "10.0.0.1"},
+		{in: "bmc.example.com:443", host: "bmc.example.com", port: 443},
+		{in: "https://10.0.0.160:16993", host: "10.0.0.160", port: 16993, scheme: "https"},
+		{in: "http://10.0.0.160", host: "10.0.0.160", scheme: "http"},
+		{in: "", bad: true},
+		{in: "https://", bad: true},
+	} {
+		host, port, scheme, err := parseAddress(tc.in)
+		if tc.bad {
+			if err == nil {
+				t.Errorf("parseAddress(%q) expected error", tc.in)
+			}
+			continue
+		}
+		if err != nil || host != tc.host || port != tc.port || scheme != tc.scheme {
+			t.Errorf("parseAddress(%q) = %q,%d,%q,%v; want %q,%d,%q", tc.in, host, port, scheme, err, tc.host, tc.port, tc.scheme)
+		}
+	}
+}
+
 func TestBMCLib_PowerStateNormalizesCase(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
@@ -91,12 +123,13 @@ func TestBMCLib_PowerCommands(t *testing.T) {
 	}
 }
 
-func TestBMCLib_MediaAndBoot(t *testing.T) {
-	s := &fakeSession{}
+func TestBMCLib_MediaAndBootRedfishStyle(t *testing.T) {
+	s := &fakeSession{metadata: bmc.Metadata{SuccessfulOpenConns: []string{"gofish"}}}
 	b := newTestBMC(s)
 	ctx := context.Background()
-	if err := b.InsertMedia(ctx, "https://example.com/talos.iso"); err != nil {
-		t.Fatal(err)
+	armed, err := b.InsertMedia(ctx, "https://example.com/talos.iso")
+	if err != nil || armed {
+		t.Fatalf("InsertMedia() = armed %v, err %v; want not armed", armed, err)
 	}
 	if err := b.EjectMedia(ctx); err != nil {
 		t.Fatal(err)
@@ -104,7 +137,11 @@ func TestBMCLib_MediaAndBoot(t *testing.T) {
 	if err := b.SetBootDevice(ctx, BootDeviceCDROM, false, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.SetHTTPBootURI(ctx, "https://example.com/uki.efi"); err != nil {
+	armed, err = b.SetHTTPBootURI(ctx, "https://example.com/uki.efi")
+	if err != nil || armed {
+		t.Fatalf("SetHTTPBootURI() = armed %v, err %v; want not armed", armed, err)
+	}
+	if _, err := b.SetHTTPBootURI(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(s.mediaCalls, ","); got != "CD:https://example.com/talos.iso,CD:" {
@@ -113,14 +150,41 @@ func TestBMCLib_MediaAndBoot(t *testing.T) {
 	if got := strings.Join(s.bootCalls, ","); got != "cdrom" {
 		t.Fatalf("boot calls = %q", got)
 	}
+	if got := strings.Join(s.httpCalls, ","); got != "https://example.com/uki.efi," {
+		t.Fatalf("http calls = %q", got)
+	}
+}
+
+func TestBMCLib_AMTArmsBootAndClearsViaEject(t *testing.T) {
+	s := &fakeSession{metadata: amtMetadata()}
+	b := newTestBMC(s)
+	ctx := context.Background()
+	armed, err := b.InsertMedia(ctx, "https://example.com/talos.iso")
+	if err != nil || !armed {
+		t.Fatalf("InsertMedia() = armed %v, err %v; want armed", armed, err)
+	}
+	armed, err = b.SetHTTPBootURI(ctx, "https://example.com/uki.efi")
+	if err != nil || !armed {
+		t.Fatalf("SetHTTPBootURI() = armed %v, err %v; want armed", armed, err)
+	}
+	if _, err := b.SetHTTPBootURI(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Clearing on AMT must go through the media eject path, never an empty URI.
 	if got := strings.Join(s.httpCalls, ","); got != "https://example.com/uki.efi" {
 		t.Fatalf("http calls = %q", got)
+	}
+	if got := strings.Join(s.mediaCalls, ","); got != "CD:https://example.com/talos.iso,CD:" {
+		t.Fatalf("media calls = %q", got)
+	}
+	if b.preferredProvider() != "IntelAMT" {
+		t.Fatalf("provider = %q, want IntelAMT remembered after first open", b.preferredProvider())
 	}
 }
 
 func TestBMCLib_UnsupportedMapsToErrUnsupported(t *testing.T) {
 	s := &fakeSession{setErr: errors.New("1 error occurred: no VirtualMediaSetter implementations found")}
-	err := newTestBMC(s).InsertMedia(context.Background(), "https://example.com/talos.iso")
+	_, err := newTestBMC(s).InsertMedia(context.Background(), "https://example.com/talos.iso")
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("InsertMedia() error = %v, want ErrUnsupported", err)
 	}
