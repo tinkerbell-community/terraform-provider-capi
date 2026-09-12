@@ -1,0 +1,102 @@
+// Copyright IBM Corp. 2021, 2026
+// SPDX-License-Identifier: MPL-2.0
+
+package talos
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/tinkerbell-community/terraform-provider-capi/internal/capi"
+)
+
+type fakeHelm struct {
+	existing map[string]bool
+	calls    []string
+	failOn   string
+}
+
+func (f *fakeHelm) key(rel HelmRelease) string { return rel.Namespace + "/" + rel.Name }
+
+func (f *fakeHelm) Exists(_ context.Context, _ string, rel HelmRelease) (bool, error) {
+	return f.existing[f.key(rel)], nil
+}
+
+func (f *fakeHelm) Install(_ context.Context, _ string, rel HelmRelease) error {
+	f.calls = append(f.calls, "install:"+f.key(rel))
+	if f.failOn == rel.Name {
+		return errors.New("chart pull failed")
+	}
+	return nil
+}
+
+func (f *fakeHelm) Upgrade(_ context.Context, _ string, rel HelmRelease) error {
+	f.calls = append(f.calls, "upgrade:"+f.key(rel))
+	return nil
+}
+
+type fakeApplier struct {
+	manifests []string
+	err       error
+}
+
+func (f *fakeApplier) Apply(_ context.Context, _ *capi.Cluster, manifest []byte) error {
+	f.manifests = append(f.manifests, string(manifest))
+	return f.err
+}
+
+func (f *fakeApplier) Delete(context.Context, *capi.Cluster, string, string) error { return nil }
+
+func TestAddonInstaller_OrderAndInstallVsUpgrade(t *testing.T) {
+	helm := &fakeHelm{existing: map[string]bool{"kube-system/cilium": true}}
+	applier := &fakeApplier{}
+	inst := NewAddonInstaller(helm, applier, nil)
+
+	err := inst.Install(context.Background(), "/tmp/kc", Addons{
+		Helm: []HelmRelease{
+			{Name: "cilium", Namespace: "kube-system", Chart: "oci://quay.io/cilium/charts/cilium"},
+			{Name: "metrics", Namespace: "monitoring", Chart: "metrics-server", Repository: "https://charts.example"},
+		},
+		Manifests: []string{"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: a\n", "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: b\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(helm.calls, ","); got != "upgrade:kube-system/cilium,install:monitoring/metrics" {
+		t.Fatalf("helm calls = %q", got)
+	}
+	if len(applier.manifests) != 2 || !strings.Contains(applier.manifests[1], "name: b") {
+		t.Fatalf("manifests = %v", applier.manifests)
+	}
+}
+
+func TestAddonInstaller_HelmFailureWrapsErrAddons(t *testing.T) {
+	helm := &fakeHelm{existing: map[string]bool{}, failOn: "cilium"}
+	inst := NewAddonInstaller(helm, &fakeApplier{}, nil)
+	err := inst.Install(context.Background(), "/tmp/kc", Addons{Helm: []HelmRelease{{Name: "cilium", Namespace: "kube-system", Chart: "x"}}})
+	if !errors.Is(err, ErrAddons) {
+		t.Fatalf("error = %v, want ErrAddons", err)
+	}
+	if !strings.Contains(err.Error(), "cilium") {
+		t.Fatalf("error %q should name the release", err)
+	}
+}
+
+func TestAddonInstaller_ManifestFailureWrapsErrAddons(t *testing.T) {
+	inst := NewAddonInstaller(&fakeHelm{existing: map[string]bool{}}, &fakeApplier{err: errors.New("apply failed")}, nil)
+	err := inst.Install(context.Background(), "/tmp/kc", Addons{Manifests: []string{"kind: X"}})
+	if !errors.Is(err, ErrAddons) {
+		t.Fatalf("error = %v, want ErrAddons", err)
+	}
+}
+
+func TestAddons_Empty(t *testing.T) {
+	if !(Addons{}).Empty() {
+		t.Fatal("zero Addons should be empty")
+	}
+	if (Addons{Manifests: []string{"x"}}).Empty() {
+		t.Fatal("Addons with manifests should not be empty")
+	}
+}
