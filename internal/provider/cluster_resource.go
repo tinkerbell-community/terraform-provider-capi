@@ -518,7 +518,7 @@ func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest
 									MarkdownDescription: "BMC configuration.",
 									Optional:            true,
 									Attributes: map[string]schema.Attribute{
-										"address":  schema.StringAttribute{Required: true, MarkdownDescription: "BMC endpoint."},
+										"address":  schema.StringAttribute{Required: true, MarkdownDescription: "BMC endpoint: `host`, `host:port`, or `scheme://host:port`. A port applies to Redfish and Intel AMT; a scheme applies to Intel AMT (e.g. `https://10.0.0.160:16993` for TLS-only AMT)."},
 										"username": schema.StringAttribute{Required: true, MarkdownDescription: "BMC username."},
 										"password": schema.StringAttribute{Required: true, Sensitive: true, MarkdownDescription: "BMC password."},
 									},

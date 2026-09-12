@@ -235,7 +235,7 @@ Optional:
 
 Required:
 
-- `address` (String) BMC endpoint.
+- `address` (String) BMC endpoint: `host`, `host:port`, or `scheme://host:port`. A port applies to Redfish and Intel AMT; a scheme applies to Intel AMT (e.g. `https://10.0.0.160:16993` for TLS-only AMT).
 - `password` (String, Sensitive) BMC password.
 - `username` (String) BMC username.
 
