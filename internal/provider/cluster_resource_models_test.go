@@ -138,6 +138,7 @@ func TestExtractManagement_Populated(t *testing.T) {
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(true),
 		Namespace:   types.StringValue("capi-system"),
+		Bootstrap:   types.ObjectNull(managementBootstrapAttrTypes()),
 	}
 	mgmtVal, diags := types.ObjectValueFrom(ctx, managementAttrTypes(), mgmt)
 	if diags.HasError() {
@@ -330,6 +331,7 @@ func TestBuildCreateOptions_Full(t *testing.T) {
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(true),
 		Namespace:   types.StringValue("capi-ns"),
+		Bootstrap:   types.ObjectNull(managementBootstrapAttrTypes()),
 	})
 	bsVal, _ := types.ObjectValueFrom(ctx, bootstrapAttrTypes(), BootstrapModel{
 		Provider: types.StringValue("kubeadm:v1.12.2"),
@@ -469,6 +471,7 @@ func TestValidateLifecycleConfig_TinkerbellRequiresSelfManaged(t *testing.T) {
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(false),
 		Namespace:   types.StringNull(),
+		Bootstrap:   types.ObjectNull(managementBootstrapAttrTypes()),
 	})
 	data := &ClusterResourceModel{
 		Name:           types.StringValue("test"),
@@ -499,6 +502,7 @@ func TestValidateLifecycleConfig_TinkerbellWithTalos(t *testing.T) {
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(true),
 		Namespace:   types.StringNull(),
+		Bootstrap:   types.ObjectNull(managementBootstrapAttrTypes()),
 	})
 	bsVal, _ := types.ObjectValueFrom(ctx, bootstrapAttrTypes(), BootstrapModel{
 		Provider: types.StringValue("talos:v0.6.7"),
@@ -537,6 +541,7 @@ func TestValidateLifecycleConfig_TinkerbellInvalidBootstrap(t *testing.T) {
 		SkipInit:    types.BoolValue(false),
 		SelfManaged: types.BoolValue(true),
 		Namespace:   types.StringNull(),
+		Bootstrap:   types.ObjectNull(managementBootstrapAttrTypes()),
 	})
 	bsVal, _ := types.ObjectValueFrom(ctx, bootstrapAttrTypes(), BootstrapModel{
 		Provider: types.StringValue("microk8s"),
@@ -717,6 +722,8 @@ type testMachine struct {
 	ip       string
 	mac      string
 	role     string // "cp" or "worker"
+	disk     string // e.g. "/dev/sda"; empty leaves disk null
+	bmc      string // BMC address; empty leaves bmc null
 }
 
 func buildTestMachineList(ctx context.Context, t *testing.T, machines []testMachine) types.List {
@@ -747,11 +754,32 @@ func buildTestMachineList(ctx context.Context, t *testing.T, machines []testMach
 			labels = types.MapNull(types.StringType)
 		}
 
+		diskVal := types.ObjectNull(diskAttrTypes())
+		if m.disk != "" {
+			v, d := types.ObjectValueFrom(ctx, diskAttrTypes(), DiskModel{Device: types.StringValue(m.disk)})
+			if d.HasError() {
+				t.Fatalf("build disk: %v", d)
+			}
+			diskVal = v
+		}
+		bmcVal := types.ObjectNull(bmcAttrTypes())
+		if m.bmc != "" {
+			v, d := types.ObjectValueFrom(ctx, bmcAttrTypes(), BMCModel{
+				Address:  types.StringValue(m.bmc),
+				Username: types.StringValue("admin"),
+				Password: types.StringValue("secret"),
+			})
+			if d.HasError() {
+				t.Fatalf("build bmc: %v", d)
+			}
+			bmcVal = v
+		}
+
 		machineObjects = append(machineObjects, MachineModel{
 			Hostname: types.StringValue(m.hostname),
 			Network:  netVal,
-			Disk:     types.ObjectNull(diskAttrTypes()),
-			BMC:      types.ObjectNull(bmcAttrTypes()),
+			Disk:     diskVal,
+			BMC:      bmcVal,
 			Labels:   labels,
 		})
 	}

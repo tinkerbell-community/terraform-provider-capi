@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -17,11 +18,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"sigs.k8s.io/yaml"
 
 	"github.com/tinkerbell-community/terraform-provider-capi/internal/capi"
 )
@@ -109,6 +114,143 @@ func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest
 						Computed:            true,
 						PlanModifiers: []planmodifier.String{
 							stringplanmodifier.RequiresReplace(),
+						},
+					},
+
+					"bootstrap": schema.SingleNestedAttribute{
+						MarkdownDescription: "Transient bootstrap cluster configuration. `type = \"kind\"` (default) creates a kind cluster. `type = \"talos\"` provisions one `inventory.machine` entry as a single-node Talos cluster through its BMC. The bootstrap cluster is torn down after the self-managed pivot and nothing about it is kept in state.",
+						Optional:            true,
+						PlanModifiers: []planmodifier.Object{
+							objectplanmodifier.RequiresReplace(),
+						},
+						Attributes: map[string]schema.Attribute{
+							"type": schema.StringAttribute{
+								MarkdownDescription: "Bootstrap cluster type: `kind` or `talos`.",
+								Optional:            true,
+								Computed:            true,
+								Default:             stringdefault.StaticString("kind"),
+							},
+							"machine": schema.StringAttribute{
+								MarkdownDescription: "Hostname of the `inventory.machine` entry to use as the bootstrap node. Its `bmc`, `network.ip_address`, and `disk.device` are used. Required when `type = \"talos\"`.",
+								Optional:            true,
+							},
+							"boot": schema.SingleNestedAttribute{
+								MarkdownDescription: "How the node is booted into the Talos installer.",
+								Optional:            true,
+								Attributes: map[string]schema.Attribute{
+									"method": schema.StringAttribute{
+										MarkdownDescription: "`auto` (virtual media, then UEFI HTTP boot), `virtual_media`, or `http`.",
+										Optional:            true,
+										Computed:            true,
+										Default:             stringdefault.StaticString("auto"),
+									},
+									"timeout": schema.StringAttribute{
+										MarkdownDescription: "Per-attempt boot and install timeout as a Go duration (e.g. `15m`).",
+										Optional:            true,
+										Computed:            true,
+										Default:             stringdefault.StaticString("15m"),
+									},
+									"attempts": schema.Int64Attribute{
+										MarkdownDescription: "Boot attempts before giving up.",
+										Optional:            true,
+										Computed:            true,
+										Default:             int64default.StaticInt64(3),
+									},
+								},
+							},
+							"talos": schema.SingleNestedAttribute{
+								MarkdownDescription: "Talos version, images, and machine config patches.",
+								Optional:            true,
+								Attributes: map[string]schema.Attribute{
+									"version": schema.StringAttribute{
+										MarkdownDescription: "Talos version (e.g. `v1.13.6`). Required when `type = \"talos\"`.",
+										Optional:            true,
+									},
+									"architecture": schema.StringAttribute{
+										MarkdownDescription: "`amd64` or `arm64`.",
+										Optional:            true,
+										Computed:            true,
+										Default:             stringdefault.StaticString("amd64"),
+									},
+									"endpoint": schema.StringAttribute{
+										MarkdownDescription: "Cluster endpoint written into the machine config. Defaults to `https://<machine ip>:6443`.",
+										Optional:            true,
+									},
+									"image": schema.SingleNestedAttribute{
+										MarkdownDescription: "Image Factory schematic or explicit image overrides.",
+										Optional:            true,
+										Attributes: map[string]schema.Attribute{
+											"factory": schema.StringAttribute{
+												MarkdownDescription: "Image Factory base URL.",
+												Optional:            true,
+												Computed:            true,
+												Default:             stringdefault.StaticString("https://factory.talos.dev"),
+											},
+											"schematic": schema.StringAttribute{
+												MarkdownDescription: "Precomputed schematic id. Conflicts with `extensions`, `kernel_args`, `iso`, and `installer`.",
+												Optional:            true,
+											},
+											"extensions": schema.ListAttribute{
+												MarkdownDescription: "Official system extension names for a new schematic.",
+												ElementType:         types.StringType,
+												Optional:            true,
+											},
+											"kernel_args": schema.ListAttribute{
+												MarkdownDescription: "Extra kernel arguments for a new schematic.",
+												ElementType:         types.StringType,
+												Optional:            true,
+											},
+											"iso": schema.StringAttribute{
+												MarkdownDescription: "Explicit ISO URL. Must be set together with `installer`; disables UEFI HTTP boot.",
+												Optional:            true,
+											},
+											"installer": schema.StringAttribute{
+												MarkdownDescription: "Explicit installer image reference. Must be set together with `iso`.",
+												Optional:            true,
+											},
+										},
+									},
+									"config_patches": schema.ListAttribute{
+										MarkdownDescription: "Machine config patches (YAML strings) applied in order after the built-in install patch.",
+										ElementType:         types.StringType,
+										Optional:            true,
+									},
+								},
+							},
+							"addons": schema.SingleNestedAttribute{
+								MarkdownDescription: "Helm releases and manifests installed on the bootstrap cluster before CAPI is initialized. Install a CNI such as Cilium here.",
+								Optional:            true,
+								Attributes: map[string]schema.Attribute{
+									"helm": schema.ListNestedAttribute{
+										MarkdownDescription: "Helm releases installed in order.",
+										Optional:            true,
+										NestedObject: schema.NestedAttributeObject{
+											Attributes: map[string]schema.Attribute{
+												"name":      schema.StringAttribute{MarkdownDescription: "Release name.", Required: true},
+												"namespace": schema.StringAttribute{MarkdownDescription: "Release namespace (created if missing).", Required: true},
+												"chart": schema.StringAttribute{
+													MarkdownDescription: "`oci://` chart reference, or a chart name used with `repository`.",
+													Required:            true,
+												},
+												"repository": schema.StringAttribute{MarkdownDescription: "HTTP chart repository URL. Ignored for `oci://` charts.", Optional: true},
+												"version":    schema.StringAttribute{MarkdownDescription: "Chart version. Latest when empty.", Optional: true},
+												"values":     schema.StringAttribute{MarkdownDescription: "Chart values as a YAML string.", Optional: true},
+												"timeout": schema.StringAttribute{
+													MarkdownDescription: "Install timeout as a Go duration.",
+													Optional:            true,
+													Computed:            true,
+													Default:             stringdefault.StaticString("10m"),
+												},
+											},
+										},
+									},
+									"manifests": schema.ListAttribute{
+										MarkdownDescription: "Raw YAML manifests applied after the Helm releases.",
+										ElementType:         types.StringType,
+										Optional:            true,
+									},
+								},
+							},
 						},
 					},
 				},
@@ -678,6 +820,7 @@ func (r *ClusterResource) UpgradeState(ctx context.Context) map[int64]resource.S
 					SkipInit:    v0.SkipInit,
 					SelfManaged: v0.SelfManaged,
 					Namespace:   ns,
+					Bootstrap:   types.ObjectNull(managementBootstrapAttrTypes()),
 				}
 				mgmtVal, d := types.ObjectValueFrom(ctx, managementAttrTypes(), mgmt)
 				resp.Diagnostics.Append(d...)
@@ -827,6 +970,9 @@ func (r *ClusterResource) validateLifecycleConfig(ctx context.Context, data *Clu
 		validateInventory(ctx, inv, cpCount, workerCount, diags)
 	}
 
+	// Validate bootstrap cluster configuration
+	validateManagementBootstrap(ctx, data, diags)
+
 	// Validate addons
 	validateAddons(ctx, data, diags)
 }
@@ -887,10 +1033,14 @@ func (r *ClusterResource) ensureManagementComputed(ctx context.Context, data *Cl
 			SkipInit:    types.BoolValue(opts.SkipInit),
 			SelfManaged: types.BoolValue(opts.SelfManaged),
 			Namespace:   types.StringValue(namespace),
+			Bootstrap:   types.ObjectNull(managementBootstrapAttrTypes()),
 		}
 	} else {
 		if mgmt.Namespace.IsNull() || mgmt.Namespace.ValueString() == "" {
 			mgmt.Namespace = types.StringValue(namespace)
+		}
+		if mgmt.Bootstrap.IsUnknown() {
+			mgmt.Bootstrap = types.ObjectNull(managementBootstrapAttrTypes())
 		}
 	}
 
@@ -974,5 +1124,144 @@ func clusterResourceSchemaV0() schema.Schema {
 			"cluster_description":         schema.StringAttribute{Computed: true},
 			"bootstrap_cluster_name":      schema.StringAttribute{Computed: true},
 		},
+	}
+}
+
+// validateManagementBootstrap checks management.bootstrap when type = "talos".
+func validateManagementBootstrap(ctx context.Context, data *ClusterResourceModel, diags *diag.Diagnostics) {
+	const summary = "Invalid bootstrap configuration"
+
+	mgmt, d := extractManagement(ctx, data)
+	diags.Append(d...)
+	bs, d := extractManagementBootstrap(ctx, mgmt)
+	diags.Append(d...)
+	if bs == nil {
+		return
+	}
+
+	typ := "kind"
+	if !bs.Type.IsNull() && !bs.Type.IsUnknown() {
+		typ = bs.Type.ValueString()
+	}
+	switch typ {
+	case "kind":
+		return
+	case "talos":
+	default:
+		diags.AddError(summary, fmt.Sprintf("management.bootstrap.type %q is not supported. Supported: kind, talos.", typ))
+		return
+	}
+
+	if bs.Machine.IsNull() || bs.Machine.ValueString() == "" {
+		diags.AddError(summary, "management.bootstrap.machine is required when type = \"talos\".")
+	} else {
+		m, d := findInventoryMachine(ctx, data, bs.Machine.ValueString())
+		diags.Append(d...)
+		if m == nil {
+			diags.AddError(summary, fmt.Sprintf("management.bootstrap.machine %q does not match any inventory.machine hostname.", bs.Machine.ValueString()))
+		} else {
+			if m.BMC.IsNull() || m.BMC.IsUnknown() {
+				diags.AddError(summary, fmt.Sprintf("inventory machine %q must define bmc to be used as the bootstrap node.", bs.Machine.ValueString()))
+			}
+			if m.Disk.IsNull() || m.Disk.IsUnknown() {
+				diags.AddError(summary, fmt.Sprintf("inventory machine %q must define disk.device to be used as the bootstrap node.", bs.Machine.ValueString()))
+			}
+			var n NetworkModel
+			diags.Append(m.Network.As(ctx, &n, basetypes.ObjectAsOptions{})...)
+			if n.IPAddress.IsNull() || n.IPAddress.ValueString() == "" {
+				diags.AddError(summary, fmt.Sprintf("inventory machine %q must define network.ip_address to be used as the bootstrap node.", bs.Machine.ValueString()))
+			}
+		}
+	}
+
+	boot, d := extractBoot(ctx, bs)
+	diags.Append(d...)
+	if boot != nil {
+		if !boot.Method.IsNull() && !boot.Method.IsUnknown() {
+			switch boot.Method.ValueString() {
+			case "auto", "virtual_media", "http":
+			default:
+				diags.AddError(summary, fmt.Sprintf("management.bootstrap.boot.method %q is not supported. Supported: auto, virtual_media, http.", boot.Method.ValueString()))
+			}
+		}
+		if !boot.Timeout.IsNull() && !boot.Timeout.IsUnknown() {
+			if _, err := time.ParseDuration(boot.Timeout.ValueString()); err != nil {
+				diags.AddError(summary, fmt.Sprintf("management.bootstrap.boot.timeout %q is not a valid duration: %v", boot.Timeout.ValueString(), err))
+			}
+		}
+		if !boot.Attempts.IsNull() && !boot.Attempts.IsUnknown() && boot.Attempts.ValueInt64() < 1 {
+			diags.AddError(summary, "management.bootstrap.boot.attempts must be at least 1.")
+		}
+	}
+
+	tm, d := extractTalos(ctx, bs)
+	diags.Append(d...)
+	if tm == nil || tm.Version.IsNull() || tm.Version.ValueString() == "" {
+		diags.AddError(summary, "management.bootstrap.talos.version is required when type = \"talos\".")
+	}
+	if tm != nil {
+		if !tm.Architecture.IsNull() && !tm.Architecture.IsUnknown() {
+			switch tm.Architecture.ValueString() {
+			case "amd64", "arm64":
+			default:
+				diags.AddError(summary, fmt.Sprintf("management.bootstrap.talos.architecture %q is not supported. Supported: amd64, arm64.", tm.Architecture.ValueString()))
+			}
+		}
+
+		img, d := extractTalosImage(ctx, tm)
+		diags.Append(d...)
+		if img != nil {
+			set := func(s types.String) bool { return !s.IsNull() && !s.IsUnknown() && s.ValueString() != "" }
+			nonEmpty := func(l types.List) bool { return !l.IsNull() && !l.IsUnknown() && len(l.Elements()) > 0 }
+			hasISO, hasInstaller := set(img.ISO), set(img.Installer)
+			hasSchematic := set(img.Schematic)
+			hasCustom := nonEmpty(img.Extensions) || nonEmpty(img.KernelArgs)
+			if hasISO != hasInstaller {
+				diags.AddError(summary, "management.bootstrap.talos.image.iso and installer must be set together.")
+			}
+			if hasISO && (hasSchematic || hasCustom) {
+				diags.AddError(summary, "management.bootstrap.talos.image.iso/installer conflict with schematic, extensions, and kernel_args.")
+			}
+			if hasSchematic && hasCustom {
+				diags.AddError(summary, "management.bootstrap.talos.image.schematic conflicts with extensions and kernel_args.")
+			}
+		}
+
+		patches, d := stringList(ctx, tm.ConfigPatches)
+		diags.Append(d...)
+		for i, p := range patches {
+			var v any
+			if err := yaml.Unmarshal([]byte(p), &v); err != nil {
+				diags.AddError(summary, fmt.Sprintf("management.bootstrap.talos.config_patches[%d] is not valid YAML: %v", i, err))
+			}
+		}
+	}
+
+	ad, d := extractBootstrapAddons(ctx, bs)
+	diags.Append(d...)
+	if ad != nil {
+		var rels []HelmReleaseModel
+		if !ad.Helm.IsNull() && !ad.Helm.IsUnknown() {
+			diags.Append(ad.Helm.ElementsAs(ctx, &rels, false)...)
+		}
+		seen := map[string]bool{}
+		for i, rel := range rels {
+			key := rel.Namespace.ValueString() + "/" + rel.Name.ValueString()
+			if seen[key] {
+				diags.AddError(summary, fmt.Sprintf("management.bootstrap.addons.helm[%d] is a duplicate release %q.", i, key))
+			}
+			seen[key] = true
+			if !rel.Timeout.IsNull() && !rel.Timeout.IsUnknown() && rel.Timeout.ValueString() != "" {
+				if _, err := time.ParseDuration(rel.Timeout.ValueString()); err != nil {
+					diags.AddError(summary, fmt.Sprintf("management.bootstrap.addons.helm[%d].timeout %q is not a valid duration: %v", i, rel.Timeout.ValueString(), err))
+				}
+			}
+			if !rel.Values.IsNull() && !rel.Values.IsUnknown() && rel.Values.ValueString() != "" {
+				var v any
+				if err := yaml.Unmarshal([]byte(rel.Values.ValueString()), &v); err != nil {
+					diags.AddError(summary, fmt.Sprintf("management.bootstrap.addons.helm[%d].values is not valid YAML: %v", i, err))
+				}
+			}
+		}
 	}
 }

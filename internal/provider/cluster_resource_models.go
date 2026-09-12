@@ -43,6 +43,59 @@ type ManagementModel struct {
 	SkipInit    types.Bool   `tfsdk:"skip_init"`
 	SelfManaged types.Bool   `tfsdk:"self_managed"`
 	Namespace   types.String `tfsdk:"namespace"`
+	Bootstrap   types.Object `tfsdk:"bootstrap"` // ManagementBootstrapModel
+}
+
+// ManagementBootstrapModel configures the transient bootstrap cluster.
+type ManagementBootstrapModel struct {
+	Type    types.String `tfsdk:"type"`
+	Machine types.String `tfsdk:"machine"`
+	Boot    types.Object `tfsdk:"boot"`   // BootModel
+	Talos   types.Object `tfsdk:"talos"`  // TalosModel
+	Addons  types.Object `tfsdk:"addons"` // BootstrapAddonsModel
+}
+
+// BootModel controls how the Talos bootstrap node boots the installer.
+type BootModel struct {
+	Method   types.String `tfsdk:"method"`
+	Timeout  types.String `tfsdk:"timeout"`
+	Attempts types.Int64  `tfsdk:"attempts"`
+}
+
+// TalosModel controls the Talos version, images, and config patches.
+type TalosModel struct {
+	Version       types.String `tfsdk:"version"`
+	Architecture  types.String `tfsdk:"architecture"`
+	Endpoint      types.String `tfsdk:"endpoint"`
+	Image         types.Object `tfsdk:"image"` // TalosImageModel
+	ConfigPatches types.List   `tfsdk:"config_patches"`
+}
+
+// TalosImageModel selects Image Factory artifacts or explicit overrides.
+type TalosImageModel struct {
+	Factory    types.String `tfsdk:"factory"`
+	Schematic  types.String `tfsdk:"schematic"`
+	Extensions types.List   `tfsdk:"extensions"`
+	KernelArgs types.List   `tfsdk:"kernel_args"`
+	ISO        types.String `tfsdk:"iso"`
+	Installer  types.String `tfsdk:"installer"`
+}
+
+// BootstrapAddonsModel lists Helm releases and manifests for the bootstrap cluster.
+type BootstrapAddonsModel struct {
+	Helm      types.List `tfsdk:"helm"` // []HelmReleaseModel
+	Manifests types.List `tfsdk:"manifests"`
+}
+
+// HelmReleaseModel describes one Helm release.
+type HelmReleaseModel struct {
+	Name       types.String `tfsdk:"name"`
+	Namespace  types.String `tfsdk:"namespace"`
+	Chart      types.String `tfsdk:"chart"`
+	Repository types.String `tfsdk:"repository"`
+	Version    types.String `tfsdk:"version"`
+	Values     types.String `tfsdk:"values"`
+	Timeout    types.String `tfsdk:"timeout"`
 }
 
 // InfrastructureModel groups attributes for the infrastructure provider.
@@ -199,6 +252,65 @@ func managementAttrTypes() map[string]attr.Type {
 		"skip_init":    types.BoolType,
 		"self_managed": types.BoolType,
 		"namespace":    types.StringType,
+		"bootstrap":    types.ObjectType{AttrTypes: managementBootstrapAttrTypes()},
+	}
+}
+
+func managementBootstrapAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"type":    types.StringType,
+		"machine": types.StringType,
+		"boot":    types.ObjectType{AttrTypes: bootAttrTypes()},
+		"talos":   types.ObjectType{AttrTypes: talosAttrTypes()},
+		"addons":  types.ObjectType{AttrTypes: bootstrapAddonsAttrTypes()},
+	}
+}
+
+func bootAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"method":   types.StringType,
+		"timeout":  types.StringType,
+		"attempts": types.Int64Type,
+	}
+}
+
+func talosAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"version":        types.StringType,
+		"architecture":   types.StringType,
+		"endpoint":       types.StringType,
+		"image":          types.ObjectType{AttrTypes: talosImageAttrTypes()},
+		"config_patches": types.ListType{ElemType: types.StringType},
+	}
+}
+
+func talosImageAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"factory":     types.StringType,
+		"schematic":   types.StringType,
+		"extensions":  types.ListType{ElemType: types.StringType},
+		"kernel_args": types.ListType{ElemType: types.StringType},
+		"iso":         types.StringType,
+		"installer":   types.StringType,
+	}
+}
+
+func bootstrapAddonsAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"helm":      types.ListType{ElemType: types.ObjectType{AttrTypes: helmReleaseAttrTypes()}},
+		"manifests": types.ListType{ElemType: types.StringType},
+	}
+}
+
+func helmReleaseAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"name":       types.StringType,
+		"namespace":  types.StringType,
+		"chart":      types.StringType,
+		"repository": types.StringType,
+		"version":    types.StringType,
+		"values":     types.StringType,
+		"timeout":    types.StringType,
 	}
 }
 
@@ -375,6 +487,80 @@ func extractManagement(ctx context.Context, data *ClusterResourceModel) (*Manage
 	var mgmt ManagementModel
 	diags := data.Management.As(ctx, &mgmt, basetypes.ObjectAsOptions{})
 	return &mgmt, diags
+}
+
+func extractManagementBootstrap(ctx context.Context, mgmt *ManagementModel) (*ManagementBootstrapModel, diag.Diagnostics) {
+	if mgmt == nil || mgmt.Bootstrap.IsNull() || mgmt.Bootstrap.IsUnknown() {
+		return nil, nil
+	}
+	var bs ManagementBootstrapModel
+	diags := mgmt.Bootstrap.As(ctx, &bs, basetypes.ObjectAsOptions{})
+	return &bs, diags
+}
+
+func extractBoot(ctx context.Context, bs *ManagementBootstrapModel) (*BootModel, diag.Diagnostics) {
+	if bs == nil || bs.Boot.IsNull() || bs.Boot.IsUnknown() {
+		return nil, nil
+	}
+	var b BootModel
+	diags := bs.Boot.As(ctx, &b, basetypes.ObjectAsOptions{})
+	return &b, diags
+}
+
+func extractTalos(ctx context.Context, bs *ManagementBootstrapModel) (*TalosModel, diag.Diagnostics) {
+	if bs == nil || bs.Talos.IsNull() || bs.Talos.IsUnknown() {
+		return nil, nil
+	}
+	var tm TalosModel
+	diags := bs.Talos.As(ctx, &tm, basetypes.ObjectAsOptions{})
+	return &tm, diags
+}
+
+func extractTalosImage(ctx context.Context, tm *TalosModel) (*TalosImageModel, diag.Diagnostics) {
+	if tm == nil || tm.Image.IsNull() || tm.Image.IsUnknown() {
+		return nil, nil
+	}
+	var img TalosImageModel
+	diags := tm.Image.As(ctx, &img, basetypes.ObjectAsOptions{})
+	return &img, diags
+}
+
+func extractBootstrapAddons(ctx context.Context, bs *ManagementBootstrapModel) (*BootstrapAddonsModel, diag.Diagnostics) {
+	if bs == nil || bs.Addons.IsNull() || bs.Addons.IsUnknown() {
+		return nil, nil
+	}
+	var ad BootstrapAddonsModel
+	diags := bs.Addons.As(ctx, &ad, basetypes.ObjectAsOptions{})
+	return &ad, diags
+}
+
+// findInventoryMachine returns the inventory machine with the given hostname, or nil.
+func findInventoryMachine(ctx context.Context, data *ClusterResourceModel, hostname string) (*MachineModel, diag.Diagnostics) {
+	inv, diags := extractInventory(ctx, data)
+	if inv == nil || inv.Machine.IsNull() || inv.Machine.IsUnknown() {
+		return nil, diags
+	}
+	var machines []MachineModel
+	diags.Append(inv.Machine.ElementsAs(ctx, &machines, false)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+	for i := range machines {
+		if machines[i].Hostname.ValueString() == hostname {
+			return &machines[i], diags
+		}
+	}
+	return nil, diags
+}
+
+// stringList converts a list of strings; null or unknown yields nil.
+func stringList(ctx context.Context, l types.List) ([]string, diag.Diagnostics) {
+	if l.IsNull() || l.IsUnknown() {
+		return nil, nil
+	}
+	var out []string
+	diags := l.ElementsAs(ctx, &out, false)
+	return out, diags
 }
 
 func extractInfrastructure(ctx context.Context, data *ClusterResourceModel) (*InfrastructureModel, diag.Diagnostics) {
