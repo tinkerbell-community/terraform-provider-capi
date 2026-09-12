@@ -259,19 +259,19 @@ func (b *BMCLib) SetBootDevice(ctx context.Context, dev BootDevice, persistent, 
 	})
 }
 
-// InsertMedia attaches an ISO as virtual CD media. On Intel AMT this arms a
-// one-shot UEFI HTTPS boot of the image, so it reports armed.
+// InsertMedia attaches an ISO as virtual CD media. Intel AMT has no CD
+// emulation: its "virtual media" is one-click recovery, which boots an EFI
+// image over HTTPS, so an ISO is reported unsupported and the reconciler
+// falls through to the UKI via SetHTTPBootURI.
 func (b *BMCLib) InsertMedia(ctx context.Context, isoURL string) (bool, error) {
-	var armed bool
 	err := b.withSession(ctx, "insert-media", func(ctx context.Context, s *openSession) error {
-		_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, isoURL)
-		if err != nil {
-			return err
+		if s.amt {
+			return fmt.Errorf("intel amt boots EFI images over https, not ISOs: %w", ErrUnsupported)
 		}
-		armed = s.amt
-		return nil
+		_, err := s.SetVirtualMedia(ctx, virtualMediaKindCD, isoURL)
+		return err
 	})
-	return armed, err
+	return false, err
 }
 
 // EjectMedia detaches virtual CD media (on Intel AMT: clears the armed boot).

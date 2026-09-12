@@ -183,13 +183,13 @@ func TestBMCLib_AMTArmsBootAndClearsViaEject(t *testing.T) {
 	s := &fakeSession{provider: "IntelAMT"}
 	b := newTestBMC(s)
 	ctx := context.Background()
-	armed, err := b.InsertMedia(ctx, "https://example.com/talos.iso")
-	if err != nil || !armed {
-		t.Fatalf("InsertMedia() = armed %v, err %v; want armed (metadata after the call no longer lists open conns)", armed, err)
+	// AMT has no CD emulation: an ISO is unsupported so auto mode moves on to the UKI.
+	if _, err := b.InsertMedia(ctx, "https://example.com/talos.iso"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("InsertMedia() error = %v, want ErrUnsupported on AMT", err)
 	}
-	armed, err = b.SetHTTPBootURI(ctx, "https://example.com/uki.efi")
+	armed, err := b.SetHTTPBootURI(ctx, "https://example.com/uki.efi")
 	if err != nil || !armed {
-		t.Fatalf("SetHTTPBootURI() = armed %v, err %v; want armed", armed, err)
+		t.Fatalf("SetHTTPBootURI() = armed %v, err %v; want armed (metadata after the call no longer lists open conns)", armed, err)
 	}
 	if _, err := b.SetHTTPBootURI(ctx, ""); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestBMCLib_AMTArmsBootAndClearsViaEject(t *testing.T) {
 	if got := strings.Join(s.httpCalls, ","); got != "https://example.com/uki.efi" {
 		t.Fatalf("http calls = %q", got)
 	}
-	if got := strings.Join(s.mediaCalls, ","); got != "CD:https://example.com/talos.iso,CD:" {
+	if got := strings.Join(s.mediaCalls, ","); got != "CD:" {
 		t.Fatalf("media calls = %q", got)
 	}
 	if b.preferredProvider() != "IntelAMT" {

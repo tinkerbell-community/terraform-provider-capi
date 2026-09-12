@@ -43,8 +43,12 @@ func TestAcceptance_TalosBootstrap(t *testing.T) {
 				Password: os.Getenv("CAPI_TALOS_BMC_PASSWORD"),
 			},
 		},
-		Boot:  BootConfig{Method: BootMethod(env("CAPI_TALOS_BOOT_METHOD", "auto"))},
-		Talos: TalosConfig{Version: env("CAPI_TALOS_VERSION", "v1.13.6"), Architecture: env("CAPI_TALOS_ARCH", "amd64")},
+		Boot: BootConfig{Method: BootMethod(env("CAPI_TALOS_BOOT_METHOD", "auto"))},
+		Talos: TalosConfig{
+			Version:      env("CAPI_TALOS_VERSION", "v1.13.6"),
+			Architecture: env("CAPI_TALOS_ARCH", "amd64"),
+			Image:        ImageSpec{Schematic: os.Getenv("CAPI_TALOS_SCHEMATIC")},
+		},
 	}
 	if s := os.Getenv("CAPI_TALOS_BOOT_TIMEOUT"); s != "" {
 		d, err := time.ParseDuration(s)
