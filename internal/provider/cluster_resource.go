@@ -145,6 +145,10 @@ func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest
 								Computed:            true,
 								Default:             stringdefault.StaticString("pivot"),
 							},
+							"state_dir": schema.StringAttribute{
+								MarkdownDescription: "Directory where the Talos machine-secrets bundle is cached so a failed apply can be retried without wiping and re-installing the node. When set, the next `terraform apply` after a failure creates the resource but resumes from the node's current state (it is recognized as ours via the cached secrets). Removed on destroy. Unset disables the cache.",
+								Optional:            true,
+							},
 							"machine": schema.StringAttribute{
 								MarkdownDescription: "Hostname of the `inventory.machine` entry to use as the bootstrap node. Its `bmc`, `network.ip_address`, and `disk.device` are used. Required when `type = \"talos\"`.",
 								Optional:            true,

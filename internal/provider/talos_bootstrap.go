@@ -62,6 +62,9 @@ func buildTalosBootstrapConfig(ctx context.Context, data *ClusterResourceModel) 
 			},
 		},
 	}
+	if !bs.StateDir.IsNull() {
+		cfg.StateDir = bs.StateDir.ValueString()
+	}
 
 	boot, d := extractBoot(ctx, bs)
 	diags.Append(d...)

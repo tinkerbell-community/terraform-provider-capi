@@ -144,3 +144,31 @@ func TestSecretsBundleRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip changed the bundle:\n--- first ---\n%s\n--- second ---\n%s", y1, y2)
 	}
 }
+
+func TestSecretsCache(t *testing.T) {
+	if secretsCachePath("", "10.0.0.160") != "" {
+		t.Fatal("empty stateDir must disable the cache")
+	}
+	dir := t.TempDir()
+	p := secretsCachePath(dir, "10.0.0.160")
+	if p == "" {
+		t.Fatal("expected a cache path for a set stateDir")
+	}
+	if _, ok := readSecretsCache(p); ok {
+		t.Fatal("expected a miss before any write")
+	}
+	if err := writeSecretsCache(p, "bundle-yaml"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readSecretsCache(p)
+	if !ok || got != "bundle-yaml" {
+		t.Fatalf("readSecretsCache = %q, ok=%v; want \"bundle-yaml\", true", got, ok)
+	}
+	// A "" path is a no-op for both read and write (caching disabled).
+	if err := writeSecretsCache("", "x"); err != nil {
+		t.Fatalf("write to empty path should be a no-op: %v", err)
+	}
+	if _, ok := readSecretsCache(""); ok {
+		t.Fatal("read of empty path must be a miss")
+	}
+}

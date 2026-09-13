@@ -498,6 +498,17 @@ func (r *reconciler) ensureConfig() error {
 	}
 	r.sess.machineConfig = gen.MachineConfig
 	r.sess.talosconfig = gen.Talosconfig
+
+	// Cache the bundle before install so a failed apply resumes without wiping
+	// and re-installing (the next create seeds it and the node is recognized as
+	// ours). No-op when no StateDir is configured.
+	if path := secretsCachePath(r.cfg.StateDir, r.cfg.Machine.IP); path != "" {
+		if y, mErr := MarshalSecretsBundle(r.sess.secretsBundle); mErr != nil {
+			r.logger.Printf("%s: marshaling secrets for resume cache: %v", r.name, mErr)
+		} else if wErr := writeSecretsCache(path, y); wErr != nil {
+			r.logger.Printf("%s: writing resume cache: %v", r.name, wErr)
+		}
+	}
 	return nil
 }
 

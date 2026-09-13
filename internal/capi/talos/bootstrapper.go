@@ -64,6 +64,12 @@ type Config struct {
 	Boot    BootConfig
 	Talos   TalosConfig
 	Addons  Addons
+	// StateDir, when set, is where the machine-secrets bundle is cached so a
+	// failed apply can be retried without wiping and re-installing: the next
+	// create seeds the cached secrets, the node is recognized as ours, and the
+	// observe-driven reconciler resumes from the node's actual state. Empty
+	// disables caching.
+	StateDir string
 }
 
 func (c Config) withDefaults() Config {
@@ -227,10 +233,20 @@ func (b *Bootstrapper) Create(ctx context.Context, opts capi.BootstrapOptions) (
 	}
 	r.sess.images = urls
 
-	// Restore persisted secrets, if any, so a node we previously provisioned is
-	// recognized as ours across runs and can be reached over the Talos API.
-	if s := opts.ProviderSecrets[ProviderSecretsKey]; s != "" {
-		if err := r.seedSecrets(s); err != nil {
+	// Restore persisted secrets so a node we previously provisioned is recognized
+	// as ours across runs and reachable over the Talos API. Prefer secrets from
+	// Terraform state; otherwise fall back to the on-disk resume cache, which
+	// survives a failed apply so the next create resumes from the node's actual
+	// state instead of wiping and re-installing.
+	seed := opts.ProviderSecrets[ProviderSecretsKey]
+	if seed == "" {
+		if cached, ok := readSecretsCache(secretsCachePath(b.cfg.StateDir, b.cfg.Machine.IP)); ok {
+			seed = cached
+			b.logger.Printf("%s: resuming from cached machine secrets", name)
+		}
+	}
+	if seed != "" {
+		if err := r.seedSecrets(seed); err != nil {
 			return nil, &capi.BootstrapError{ClusterName: name, Operation: "seed-secrets", Err: err}
 		}
 	}
@@ -307,10 +323,33 @@ func (b *Bootstrapper) Delete(ctx context.Context, cluster *capi.Cluster) error 
 	r := b.last
 	b.mu.Unlock()
 	if r == nil {
+		// Fresh process (no live session): seed secrets from state or the resume
+		// cache so teardown can reach and reset the node over the Talos API.
 		r = b.newReconciler(name, "")
+		seed := ""
+		if cluster != nil {
+			seed = cluster.ProviderSecrets[ProviderSecretsKey]
+		}
+		if seed == "" {
+			if cached, ok := readSecretsCache(secretsCachePath(b.cfg.StateDir, b.cfg.Machine.IP)); ok {
+				seed = cached
+			}
+		}
+		if seed != "" {
+			if urls, err := b.images.Resolve(ctx, b.cfg.Talos.Image); err == nil {
+				r.sess.images = urls
+			}
+			if err := r.seedSecrets(seed); err != nil {
+				b.logger.Printf("%s: seeding secrets for teardown: %v", name, err)
+			}
+		}
 	}
 	if err := r.teardown(ctx); err != nil {
 		return &capi.BootstrapError{ClusterName: name, Operation: "delete", Err: err}
+	}
+	// The cluster is gone; drop the resume cache so a later create starts fresh.
+	if p := secretsCachePath(b.cfg.StateDir, b.cfg.Machine.IP); p != "" {
+		_ = os.Remove(p)
 	}
 	b.mu.Lock()
 	b.last = nil

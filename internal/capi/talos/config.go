@@ -5,6 +5,8 @@ package talos
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +24,42 @@ import (
 // the Talos machine-secrets bundle (YAML). It is provider-scoped so the generic
 // secrets map can carry secrets for any bootstrap provider.
 const ProviderSecretsKey = "talos_machine_secrets"
+
+// secretsCachePath returns the file where the machine-secrets bundle is cached
+// for resume, keyed by node so a failed apply can be retried without wiping and
+// re-installing. It returns "" when stateDir is empty (caching disabled).
+func secretsCachePath(stateDir, nodeIP string) string {
+	if stateDir == "" {
+		return ""
+	}
+	safe := strings.NewReplacer("/", "_", ":", "_").Replace(nodeIP)
+	return filepath.Join(stateDir, "talos-"+safe+"-secrets.yaml")
+}
+
+// readSecretsCache reads a cached bundle YAML; ok is false when path is empty or
+// the file is absent/unreadable.
+func readSecretsCache(path string) (yaml string, ok bool) {
+	if path == "" {
+		return "", false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+// writeSecretsCache writes the bundle YAML (0600), creating stateDir as needed.
+// A "" path disables caching and is a no-op.
+func writeSecretsCache(path, bundleYAML string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(bundleYAML), 0o600)
+}
 
 // ConfigInput is what the bootstrapper needs to render a controlplane config.
 type ConfigInput struct {

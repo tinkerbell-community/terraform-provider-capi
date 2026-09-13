@@ -79,12 +79,13 @@ type ManagementModel struct {
 
 // ManagementBootstrapModel configures the transient bootstrap cluster.
 type ManagementBootstrapModel struct {
-	Type    types.String `tfsdk:"type"`
-	Mode    types.String `tfsdk:"mode"`
-	Machine types.String `tfsdk:"machine"`
-	Boot    types.Object `tfsdk:"boot"`   // BootModel
-	Talos   types.Object `tfsdk:"talos"`  // TalosModel
-	Addons  types.Object `tfsdk:"addons"` // BootstrapAddonsModel
+	Type     types.String `tfsdk:"type"`
+	Mode     types.String `tfsdk:"mode"`
+	StateDir types.String `tfsdk:"state_dir"`
+	Machine  types.String `tfsdk:"machine"`
+	Boot     types.Object `tfsdk:"boot"`   // BootModel
+	Talos    types.Object `tfsdk:"talos"`  // TalosModel
+	Addons   types.Object `tfsdk:"addons"` // BootstrapAddonsModel
 }
 
 // BootModel controls how the Talos bootstrap node boots the installer.
@@ -290,12 +291,13 @@ func managementAttrTypes() map[string]attr.Type {
 
 func managementBootstrapAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
-		"type":    types.StringType,
-		"mode":    types.StringType,
-		"machine": types.StringType,
-		"boot":    types.ObjectType{AttrTypes: bootAttrTypes()},
-		"talos":   types.ObjectType{AttrTypes: talosAttrTypes()},
-		"addons":  types.ObjectType{AttrTypes: bootstrapAddonsAttrTypes()},
+		"type":      types.StringType,
+		"mode":      types.StringType,
+		"state_dir": types.StringType,
+		"machine":   types.StringType,
+		"boot":      types.ObjectType{AttrTypes: bootAttrTypes()},
+		"talos":     types.ObjectType{AttrTypes: talosAttrTypes()},
+		"addons":    types.ObjectType{AttrTypes: bootstrapAddonsAttrTypes()},
 	}
 }
 
