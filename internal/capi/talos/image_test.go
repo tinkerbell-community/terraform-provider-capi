@@ -26,8 +26,18 @@ func TestFactoryResolver_ExplicitOverrides(t *testing.T) {
 }
 
 func TestFactoryResolver_PrecomputedSchematic(t *testing.T) {
+	// The installer keeps the pinned schematic (no POST for it); the boot ISO
+	// uses a derived schematic that strips talos.halt_if_installed, which is one
+	// POST.
+	var bootBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		if r.Method != http.MethodPost || r.URL.Path != "/schematics" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &bootBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"boot123"}`))
 	}))
 	defer srv.Close()
 
@@ -39,25 +49,42 @@ func TestFactoryResolver_PrecomputedSchematic(t *testing.T) {
 	}
 	host := srv.Listener.Addr().String()
 	want := ImageURLs{
-		ISO:       srv.URL + "/image/abc123/v1.13.6/metal-arm64.iso",
-		UKI:       srv.URL + "/image/abc123/v1.13.6/metal-arm64-uki.efi",
-		Installer: host + "/metal-installer/abc123:v1.13.6",
+		ISO:       srv.URL + "/image/boot123/v1.13.6/metal-arm64.iso",
+		UKI:       srv.URL + "/image/boot123/v1.13.6/metal-arm64-uki.efi",
+		Installer: host + "/installer/abc123:v1.13.6",
 	}
 	if got != want {
 		t.Fatalf("Resolve() = %+v, want %+v", got, want)
 	}
+	if args := kernelArgsOf(t, bootBody); len(args) != 1 || args[0] != "-talos.halt_if_installed" {
+		t.Fatalf("boot extraKernelArgs = %v, want [-talos.halt_if_installed]", args)
+	}
+}
+
+// kernelArgsOf extracts customization.extraKernelArgs from a schematic POST body.
+func kernelArgsOf(t *testing.T, body map[string]any) []string {
+	t.Helper()
+	cust, _ := body["customization"].(map[string]any)
+	raw, _ := cust["extraKernelArgs"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, a := range raw {
+		out = append(out, a.(string))
+	}
+	return out
 }
 
 func TestFactoryResolver_CreatesSchematic(t *testing.T) {
-	var body map[string]any
+	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/schematics" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		raw, _ := io.ReadAll(r.Body)
-		if err := json.Unmarshal(raw, &body); err != nil {
+		var b map[string]any
+		if err := json.Unmarshal(raw, &b); err != nil {
 			t.Errorf("bad body: %v", err)
 		}
+		bodies = append(bodies, b)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"deadbeef"}`))
 	}))
@@ -72,21 +99,24 @@ func TestFactoryResolver_CreatesSchematic(t *testing.T) {
 	if got.ISO != srv.URL+"/image/deadbeef/v1.13.6/metal-amd64.iso" {
 		t.Fatalf("ISO = %q", got.ISO)
 	}
-	cust, ok := body["customization"].(map[string]any)
-	if !ok {
-		t.Fatalf("customization missing: %v", body)
+	// Two schematics are created: the installer schematic, then the boot
+	// schematic (which additionally removes talos.halt_if_installed).
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 schematic POSTs (installer + boot), got %d", len(bodies))
 	}
-	sysExt, ok := cust["systemExtensions"].(map[string]any)
-	if !ok {
-		t.Fatalf("systemExtensions missing: %v", cust)
+	for i, b := range bodies {
+		cust, _ := b["customization"].(map[string]any)
+		sysExt, _ := cust["systemExtensions"].(map[string]any)
+		ext, _ := sysExt["officialExtensions"].([]any)
+		if len(ext) != 1 || ext[0] != "siderolabs/iscsi-tools" {
+			t.Fatalf("POST %d officialExtensions = %v", i, sysExt["officialExtensions"])
+		}
 	}
-	ext, ok := sysExt["officialExtensions"].([]any)
-	if !ok || len(ext) != 1 || ext[0] != "siderolabs/iscsi-tools" {
-		t.Fatalf("officialExtensions = %v", sysExt["officialExtensions"])
+	if args := kernelArgsOf(t, bodies[0]); len(args) != 1 || args[0] != "net.ifnames=0" {
+		t.Fatalf("installer extraKernelArgs = %v, want [net.ifnames=0]", args)
 	}
-	args, ok := cust["extraKernelArgs"].([]any)
-	if !ok || len(args) != 1 || args[0] != "net.ifnames=0" {
-		t.Fatalf("extraKernelArgs = %v", cust["extraKernelArgs"])
+	if args := kernelArgsOf(t, bodies[1]); len(args) != 2 || args[0] != "net.ifnames=0" || args[1] != "-talos.halt_if_installed" {
+		t.Fatalf("boot extraKernelArgs = %v, want [net.ifnames=0 -talos.halt_if_installed]", args)
 	}
 }
 

@@ -11,6 +11,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
+	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"testing"
@@ -19,7 +22,9 @@ import (
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -112,5 +117,40 @@ func TestMachineryNode_ProbeConfiguredWithoutTalosconfigIsForeign(t *testing.T) 
 	}
 	if got != TalosForeign {
 		t.Fatalf("Probe() = %q, want foreign", got)
+	}
+}
+
+func TestIsMaintenanceTeardownErr(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"unavailable with cert-required", status.Error(codes.Unavailable, `connection error: desc = "error reading server preface: remote error: tls: certificate required"`), true},
+		{"plain unavailable", status.Error(codes.Unavailable, "connection refused"), true},
+		{"io.EOF", io.EOF, true},
+		{"transport closing", fmt.Errorf("rpc error: %s", "transport is closing"), true},
+		{"invalid config rejected", status.Error(codes.InvalidArgument, "invalid machine configuration"), false},
+		{"internal error", status.Error(codes.Internal, "boom"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMaintenanceTeardownErr(context.Background(), tt.err); got != tt.want {
+				t.Errorf("isMaintenanceTeardownErr(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsMaintenanceTeardownErr_CancelledContextIsNotTeardown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Even an otherwise-teardown-looking error is a real abort once the caller
+	// cancelled the context.
+	if isMaintenanceTeardownErr(ctx, status.Error(codes.Unavailable, "connection refused")) {
+		t.Error("cancelled context should not be treated as maintenance teardown")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("ctx.Err() = %v, want Canceled", ctx.Err())
 	}
 }

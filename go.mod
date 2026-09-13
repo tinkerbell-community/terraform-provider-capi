@@ -4,11 +4,13 @@ go 1.26.5
 
 require (
 	github.com/bmc-toolbox/bmclib/v2 v2.3.6-0.20260724022505-33fe4e06a8da
+	github.com/device-management-toolkit/go-wsman-messages/v2 v2.50.3
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-log v0.11.0
 	github.com/hashicorp/terraform-plugin-testing v1.15.0
+	github.com/jacobweinstock/iamt v0.0.0-20260519145820-aa85bf8aad4e
 	github.com/siderolabs/talos/pkg/machinery v1.13.6
 	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
@@ -60,7 +62,6 @@ require (
 	github.com/cosi-project/runtime v1.14.1 // indirect
 	github.com/cyphar/filepath-securejoin v0.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/device-management-toolkit/go-wsman-messages/v2 v2.50.3 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/drone/envsubst/v2 v2.0.0-20210730161058-179042472c46 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -126,7 +127,6 @@ require (
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/jacobweinstock/iamt v0.0.0-20260519145820-aa85bf8aad4e // indirect
 	github.com/jacobweinstock/registrar v0.4.7 // indirect
 	github.com/jmoiron/sqlx v1.4.0 // indirect
 	github.com/jsimonetti/rtnetlink/v2 v2.2.1-0.20260317095713-310581b9c6ac // indirect
@@ -256,4 +256,4 @@ tool github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
 
 replace github.com/bmc-toolbox/bmclib/v2 => github.com/tinkerbell-community/bmclib/v2 v2.0.0-20260910214435-7baaf88e8399
 
-replace github.com/jacobweinstock/iamt => github.com/tinkerbell-community/iamt v0.0.0-20260910214403-be779a24a30d
+replace github.com/jacobweinstock/iamt => /home/appkins/src/tinkerbell-community/iamt

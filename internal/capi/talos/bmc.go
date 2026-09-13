@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/bmc-toolbox/bmclib/v2/bmc"
 	bmclibErrs "github.com/bmc-toolbox/bmclib/v2/errors"
 	"github.com/bmc-toolbox/bmclib/v2/providers/intelamt"
+	"github.com/jacobweinstock/iamt"
 )
 
 // BMCCredentials identifies and authenticates to a machine's BMC.
@@ -314,4 +316,124 @@ func (b *BMCLib) PostCode(ctx context.Context) (string, error) {
 		return nil
 	})
 	return out, err
+}
+
+// RedirectHandle is a running storage-redirection session. Close tears it down.
+type RedirectHandle interface {
+	Close() error
+}
+
+// ISORedirector is implemented by BMCs that can stream an ISO to the host as a
+// bootable CD over a persistent session (Intel AMT IDE-R/USB-R), so the host
+// boots with no dependency on its own firmware network stack. The image is
+// streamed on demand from its URL using HTTP range requests — nothing is
+// written to local disk. RedirectISO returns an error wrapping ErrUnsupported
+// when the BMC or host is not AMT.
+type ISORedirector interface {
+	// RedirectSupported reports whether this BMC will use storage redirection,
+	// i.e. the connected provider is Intel AMT. It is cheap: it reflects the
+	// provider learned from an earlier operation this run.
+	RedirectSupported(ctx context.Context) bool
+	// RedirectISO streams the ISO at isoURL to the host over redirection.
+	RedirectISO(ctx context.Context, isoURL string) (RedirectHandle, error)
+}
+
+// redirectHandle owns the resources of one redirection session. file is set
+// only when serving a local image file (the streamed-URL model keeps none).
+type redirectHandle struct {
+	sess *iamt.RedirectSession
+	cli  *iamt.Client
+	file *os.File
+}
+
+func (h *redirectHandle) Close() error {
+	var errs []error
+	if h.sess != nil {
+		errs = append(errs, h.sess.Close())
+	}
+	if h.cli != nil {
+		errs = append(errs, h.cli.Close(context.Background()))
+	}
+	if h.file != nil {
+		errs = append(errs, h.file.Close())
+	}
+	return errors.Join(errs...)
+}
+
+// isHTTPURL reports whether ref is an http(s) URL rather than a local path.
+func isHTTPURL(ref string) bool {
+	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
+}
+
+// RedirectSupported implements ISORedirector.
+func (b *BMCLib) RedirectSupported(context.Context) bool {
+	return b.preferredProvider() == intelamt.ProviderName
+}
+
+// RedirectISO implements ISORedirector for Intel AMT hosts. It opens an AMT
+// session, enables redirection, and serves the ISO at isoRef to the host as a
+// bootable CD, arming a one-shot boot from it on the next host reset. isoRef may
+// be either an http(s) URL — streamed on demand with range requests, nothing
+// written to local disk — or a local file path, served from that file. The
+// returned handle must be closed to end the session.
+//
+// It is meaningful only for Intel AMT. When this BMC has already opened a
+// non-AMT provider, it returns ErrUnsupported without contacting the device.
+func (b *BMCLib) RedirectISO(ctx context.Context, isoRef string) (RedirectHandle, error) {
+	if p := b.preferredProvider(); p != "" && p != intelamt.ProviderName {
+		return nil, fmt.Errorf("storage redirection: provider %q: %w", p, ErrUnsupported)
+	}
+
+	host, port, scheme, err := parseAddress(b.creds.Address)
+	if err != nil {
+		return nil, err
+	}
+	if scheme == "" {
+		scheme = "http"
+	}
+	if port == 0 {
+		if scheme == "https" {
+			port = 16993
+		} else {
+			port = 16992
+		}
+	}
+
+	cli := iamt.NewClient(host, b.creds.Username, b.creds.Password,
+		iamt.WithScheme(scheme), iamt.WithPort(uint32(port)))
+	if err := cli.Open(ctx); err != nil {
+		return nil, fmt.Errorf("storage redirection: opening AMT session: %w", err)
+	}
+
+	// Streamed-URL model: fetch on demand, no local disk.
+	if isHTTPURL(isoRef) {
+		sess, err := cli.MountURL(ctx, isoRef)
+		if err != nil {
+			_ = cli.Close(ctx)
+			return nil, fmt.Errorf("storage redirection: %w", err)
+		}
+		b.logger.Printf("bmc %s: storage redirection streaming %s", b.creds.Address, isoRef)
+		return &redirectHandle{sess: sess, cli: cli}, nil
+	}
+
+	// Local-file model: serve a pre-downloaded image from disk.
+	f, err := os.Open(isoRef) //nolint:gosec // operator-provided image path
+	if err != nil {
+		_ = cli.Close(ctx)
+		return nil, fmt.Errorf("storage redirection: opening image: %w", err)
+	}
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		_ = cli.Close(ctx)
+		return nil, fmt.Errorf("storage redirection: stat image: %w", err)
+	}
+	sess, err := cli.MountISO(ctx, f, st.Size())
+	if err != nil {
+		_ = f.Close()
+		_ = cli.Close(ctx)
+		return nil, fmt.Errorf("storage redirection: %w", err)
+	}
+	b.logger.Printf("bmc %s: storage redirection serving %s (%d bytes)", b.creds.Address, isoRef, st.Size())
+	return &redirectHandle{sess: sess, cli: cli, file: f}, nil
 }

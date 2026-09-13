@@ -20,6 +20,13 @@ func Plan(in PlanInput) Action {
 
 	switch obs.Talos {
 	case TalosUnreachable, TalosForeign:
+		// A node we have already installed (seen as ours) that is now merely
+		// unreachable is rebooting — most often the post-install kexec. Wait for
+		// it to return instead of wiping a good install. Foreign is different: it
+		// is some other cluster's node and must be re-imaged.
+		if h.Installed && obs.Talos == TalosUnreachable {
+			return Action{Kind: ActionAwaitNode}
+		}
 		if h.BootAttempts >= in.MaxAttempts {
 			return Action{Kind: ActionFail, Err: ErrAttemptsExhausted}
 		}

@@ -17,6 +17,21 @@ import (
 // DefaultFactoryURL is the public Talos Image Factory.
 const DefaultFactoryURL = "https://factory.talos.dev"
 
+// bootResetKernelArgs customize the boot image so an already-installed node can
+// be re-provisioned. "-talos.halt_if_installed" (the "-" prefix removes an arg)
+// drops the metal-ISO default that halts when Talos is already installed, so the
+// ISO comes up in maintenance mode instead of halting.
+//
+// It deliberately does NOT set "talos.experimental.wipe=system". On a one-shot
+// IDER boot that arg wipes the disk and then reboots, and because the one-shot
+// boot entry is already consumed the node reboots into a now-blank disk with no
+// bootable device (confirmed on hardware: the node reads the whole ISO into RAM,
+// wipes, reboots, and is then stuck at "a bootable device has not been
+// detected"). Wiping an installed node is handled out of band instead — an
+// API-driven talosctl reset for nodes we own, otherwise the install writing a
+// fresh system to disk once the node is in maintenance.
+var bootResetKernelArgs = []string{"-talos.halt_if_installed"}
+
 // ImageSpec describes which Talos images to boot and install.
 type ImageSpec struct {
 	// Factory is the Image Factory base URL. Empty means DefaultFactoryURL.
@@ -90,12 +105,27 @@ func (r *FactoryResolver) Resolve(ctx context.Context, spec ImageSpec) (ImageURL
 		return ImageURLs{}, fmt.Errorf("invalid image factory URL %q", factory)
 	}
 
-	id := spec.Schematic
-	if id == "" {
-		id, err = r.createSchematic(ctx, factory, spec.Extensions, spec.KernelArgs)
+	// The installer image (and the installed system) uses the caller's schematic.
+	installerID := spec.Schematic
+	if installerID == "" {
+		installerID, err = r.createSchematic(ctx, factory, spec.Extensions, spec.KernelArgs)
 		if err != nil {
 			return ImageURLs{}, err
 		}
+	}
+
+	// Boot media (ISO/UKI) uses a schematic that strips talos.halt_if_installed
+	// (the metal ISO sets it by default). Without it, a node that already has
+	// Talos on disk halts when booted from the ISO instead of entering
+	// maintenance mode; with it removed the node boots to maintenance and the
+	// reconciler re-installs, wiping the disk. Note: a caller that pins a
+	// schematic id with system extensions does not carry those into this boot
+	// image (the id's customization is not recoverable from the id), so the
+	// maintenance environment is the base image plus this removal.
+	bootArgs := append(append([]string(nil), spec.KernelArgs...), bootResetKernelArgs...)
+	bootID, err := r.createSchematic(ctx, factory, spec.Extensions, bootArgs)
+	if err != nil {
+		return ImageURLs{}, err
 	}
 
 	arch := spec.Architecture
@@ -103,9 +133,9 @@ func (r *FactoryResolver) Resolve(ctx context.Context, spec ImageSpec) (ImageURL
 		arch = "amd64"
 	}
 	return ImageURLs{
-		ISO:       fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", factory, id, spec.Version, arch),
-		UKI:       fmt.Sprintf("%s/image/%s/%s/metal-%s-uki.efi", factory, id, spec.Version, arch),
-		Installer: fmt.Sprintf("%s/metal-installer/%s:%s", u.Host, id, spec.Version),
+		ISO:       fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", factory, bootID, spec.Version, arch),
+		UKI:       fmt.Sprintf("%s/image/%s/%s/metal-%s-uki.efi", factory, bootID, spec.Version, arch),
+		Installer: fmt.Sprintf("%s/installer/%s:%s", u.Host, installerID, spec.Version),
 	}, nil
 }
 

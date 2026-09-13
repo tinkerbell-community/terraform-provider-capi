@@ -101,6 +101,10 @@ type History struct {
 	WentDownAfterApply bool
 	// MediaAttached is set while installer media is believed to be attached.
 	MediaAttached bool
+	// Installed is set once the node has been observed as ours (a successful
+	// install). A node that is later briefly unreachable is then treated as
+	// rebooting (the post-install kexec) rather than re-imaged.
+	Installed bool
 	// AddonsInstalled is set once the addon installer returned success.
 	AddonsInstalled bool
 }
@@ -114,6 +118,7 @@ const (
 	ActionApplyConfig    ActionKind = "apply-config"
 	ActionRebootToDisk   ActionKind = "reboot-to-disk"
 	ActionDetachMedia    ActionKind = "detach-media"
+	ActionAwaitNode      ActionKind = "await-node"
 	ActionBootstrapEtcd  ActionKind = "bootstrap-etcd"
 	ActionWaitKubernetes ActionKind = "wait-kubernetes"
 	ActionInstallAddons  ActionKind = "install-addons"

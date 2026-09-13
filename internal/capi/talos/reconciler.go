@@ -84,6 +84,10 @@ type session struct {
 	method          BootMethod
 	kubeconfigPath  string
 	talosconfigPath string
+
+	// mediaRedirect is the live redirection session, kept open from attach
+	// until the node is installed and DetachMedia runs.
+	mediaRedirect RedirectHandle
 }
 
 // maxActionFailures bounds consecutive failures of the same action before the run fails.
@@ -110,11 +114,18 @@ type reconciler struct {
 
 // run loops observe -> plan -> act until Done or a terminal failure.
 func (r *reconciler) run(ctx context.Context) (*capi.Cluster, error) {
+	// The redirection session streams the ISO on demand and is only needed until
+	// the node is installed; release it whenever the loop exits (detachMedia has
+	// usually already closed the session, making closeMedia a no-op).
+	defer r.closeMedia()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		obs := r.observe(ctx)
+		if obs.Talos == TalosOurs {
+			r.hist.Installed = true
+		}
 		act := Plan(PlanInput{Observation: obs, History: r.hist, MaxAttempts: r.cfg.Boot.Attempts, HasAddons: !r.cfg.Addons.Empty()})
 		r.logger.Printf("%s: observed %s -> %s (boot attempts %d/%d)", r.name, obs, act.Kind, r.hist.BootAttempts, r.cfg.Boot.Attempts)
 
@@ -193,6 +204,8 @@ func (r *reconciler) act(ctx context.Context, kind ActionKind, obs Observation) 
 	case ActionDetachMedia:
 		r.detachMedia(ctx)
 		return nil
+	case ActionAwaitNode:
+		return r.awaitNode(ctx)
 	case ActionBootstrapEtcd:
 		return r.bootstrapEtcd(ctx)
 	case ActionWaitKubernetes:
@@ -247,7 +260,20 @@ func (r *reconciler) bootInstaller(ctx context.Context, obs Observation) error {
 			return ctx.Err()
 		}
 		r.recordAttempt(ctx, attempt, ErrBootTimeout)
+		return nil
 	}
+
+	// Talos has reached maintenance mode, which means it has pulled its whole
+	// system image into RAM and no longer reads the installer media. Close any
+	// storage-redirection session now rather than holding it open through the
+	// install: on Intel AMT the emulated USB-R device, left attached and idle,
+	// provokes a relentless "reset high-speed USB device" storm in the booted
+	// node. That storm starves the node (the installer image pull times out on
+	// its TLS handshake) and can knock it off the network entirely the moment
+	// the media is finally yanked. The one-shot boot is already consumed, so the
+	// node boots the installed disk next. Non-AMT paths keep no session here, so
+	// this is a no-op for them.
+	r.closeMedia()
 	return nil
 }
 
@@ -259,6 +285,14 @@ func (r *reconciler) attachMedia(ctx context.Context) error {
 	virtualMedia := func(ctx context.Context) error {
 		if r.sess.images.ISO == "" {
 			return fmt.Errorf("virtual media: no ISO URL: %w", ErrUnsupported)
+		}
+		// On Intel AMT, virtual media means storage redirection (IDE-R/USB-R):
+		// the ISO is streamed from here over the AMT channel, which arms the
+		// boot itself. Everything else uses bmclib virtual media.
+		if err := r.redirectISO(ctx); err == nil {
+			return nil
+		} else if !errors.Is(err, ErrUnsupported) {
+			return err
 		}
 		var armed bool
 		if err := r.bmcDo(ctx, func(ctx context.Context) error {
@@ -326,6 +360,25 @@ func (r *reconciler) attachMedia(ctx context.Context) error {
 		return fmt.Errorf("%w: %v", ErrNoBootMethod, err)
 	}
 	return err
+}
+
+// awaitNode waits for an already-installed node to return after a reboot
+// (typically the post-install kexec) instead of re-imaging it. If it does not
+// come back within the install window, the install is treated as lost and the
+// node is re-imaged on a later pass.
+func (r *reconciler) awaitNode(ctx context.Context) error {
+	r.logger.Printf("%s: installed node is unreachable; waiting for it to return before re-imaging", r.name)
+	if err := waitFor(ctx, r.timeouts.Install, r.timeouts.Poll, func(ctx context.Context) (bool, error) {
+		st := r.probe(ctx)
+		return st == TalosOurs || st == TalosMaintenance, nil
+	}); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		r.hist.Installed = false
+		r.recordAttempt(ctx, r.hist.BootAttempts, errors.New("installed node did not return after reboot"))
+	}
+	return nil
 }
 
 // applyConfig generates (once) and applies the machine config, then waits for
@@ -401,8 +454,42 @@ func (r *reconciler) rebootToDisk(ctx context.Context) error {
 	return nil
 }
 
+// redirectISO streams the installer ISO to the host over storage redirection
+// (Intel AMT) on demand from its URL — nothing is written to local disk. If
+// images.ISO is a local file path instead of a URL, RedirectISO serves that
+// file. It returns ErrUnsupported when the BMC is not an AMT redirector, so the
+// caller can fall back.
+func (r *reconciler) redirectISO(ctx context.Context) error {
+	rd, ok := r.bmc.(ISORedirector)
+	if !ok || !rd.RedirectSupported(ctx) {
+		return fmt.Errorf("storage redirection unavailable: %w", ErrUnsupported)
+	}
+	if r.sess.images.ISO == "" {
+		return fmt.Errorf("storage redirection: no ISO URL: %w", ErrUnsupported)
+	}
+	handle, err := rd.RedirectISO(ctx, r.sess.images.ISO)
+	if err != nil {
+		return err
+	}
+	r.sess.mediaRedirect = handle
+	r.sess.method = BootMethodVirtualMedia
+	r.logger.Printf("%s: booting via AMT storage redirection", r.name)
+	return nil
+}
+
+// closeMedia tears down a live redirection session, if any.
+func (r *reconciler) closeMedia() {
+	if r.sess.mediaRedirect != nil {
+		if err := r.sess.mediaRedirect.Close(); err != nil {
+			r.logger.Printf("%s: closing storage redirection: %v", r.name, err)
+		}
+		r.sess.mediaRedirect = nil
+	}
+}
+
 // detachMedia ejects virtual media and clears the HTTP boot URI, best effort.
 func (r *reconciler) detachMedia(ctx context.Context) {
+	r.closeMedia()
 	if err := r.bmcDo(ctx, r.bmc.EjectMedia); err != nil && !errors.Is(err, ErrUnsupported) {
 		r.logger.Printf("%s: eject media: %v", r.name, err)
 	}
@@ -548,6 +635,7 @@ func (r *reconciler) teardown(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	r.detachMedia(ctx)
+	r.closeMedia()
 	for _, p := range []string{r.sess.kubeconfigPath, r.sess.talosconfigPath} {
 		if p != "" {
 			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {

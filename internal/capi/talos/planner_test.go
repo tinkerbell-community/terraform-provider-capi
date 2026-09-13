@@ -49,6 +49,32 @@ func TestPlan(t *testing.T) {
 	}
 }
 
+func TestPlan_InstalledNodeUnreachableWaits(t *testing.T) {
+	// A node we already installed that is briefly unreachable (post-install
+	// reboot) must be waited for, not re-imaged — even with attempts remaining.
+	got := Plan(PlanInput{
+		Observation: Observation{Talos: TalosUnreachable},
+		History:     History{Installed: true, ConfigApplied: true, BootAttempts: 1},
+		MaxAttempts: 3,
+	})
+	if got.Kind != ActionAwaitNode {
+		t.Fatalf("Plan() kind = %q, want %q", got.Kind, ActionAwaitNode)
+	}
+}
+
+func TestPlan_ForeignNodeReimagesEvenIfInstalledFlagSet(t *testing.T) {
+	// Foreign (another cluster's node) is always re-imaged; the Installed flag
+	// only protects our own node while it is transiently unreachable.
+	got := Plan(PlanInput{
+		Observation: Observation{Talos: TalosForeign},
+		History:     History{Installed: true, BootAttempts: 0},
+		MaxAttempts: 3,
+	})
+	if got.Kind != ActionBootInstaller {
+		t.Fatalf("Plan() kind = %q, want %q", got.Kind, ActionBootInstaller)
+	}
+}
+
 func TestObservationString(t *testing.T) {
 	obs := Observation{Power: PowerOn, Talos: TalosOurs, Etcd: EtcdBootstrapped, Kubernetes: K8sReachable}
 	got := obs.String()

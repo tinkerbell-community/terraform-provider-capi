@@ -6,13 +6,18 @@ package talos
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Node is the Talos API surface the reconciler needs.
@@ -120,9 +125,51 @@ func (n *MachineryNode) ApplyConfiguration(ctx context.Context, cfg []byte) erro
 		Mode: machineapi.ApplyConfigurationRequest_REBOOT,
 	})
 	if err != nil {
+		// A REBOOT-mode apply tears down the maintenance apid as the node
+		// leaves maintenance for the configured system, so the RPC frequently
+		// fails to return even though the config was accepted: the connection
+		// drops (Unavailable/EOF/"transport is closing") or the now-configured
+		// apid demands a client certificate ("certificate required"). Treat
+		// those as applied — the caller confirms by waiting for the node to
+		// reboot and come back — while still surfacing a genuine rejection
+		// (e.g. an invalid config, which returns InvalidArgument).
+		if isMaintenanceTeardownErr(ctx, err) {
+			return nil
+		}
 		return fmt.Errorf("applying configuration: %w", err)
 	}
 	return nil
+}
+
+// isMaintenanceTeardownErr reports whether err is the expected fallout of a
+// REBOOT-mode ApplyConfiguration succeeding: the maintenance service goes away
+// mid-call as the node transitions, so the RPC never gets a clean response. A
+// caller-cancelled context is not counted (that is a real abort), and neither
+// are RPC-level rejections such as InvalidArgument.
+func isMaintenanceTeardownErr(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	if status.Code(err) == codes.Unavailable {
+		return true
+	}
+	msg := err.Error()
+	for _, s := range []string{
+		"certificate required",
+		"transport is closing",
+		"error reading server preface",
+		"connection refused",
+		"connection reset",
+		"EOF",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Bootstrap implements Node.
