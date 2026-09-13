@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/dynamicplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -77,6 +78,14 @@ func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest
 				MarkdownDescription: "Cluster identifier.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"provider_secrets": schema.DynamicAttribute{
+				MarkdownDescription: "Opaque, provider-specific secrets persisted so later operations can recognize and manage what this provider created — for the Talos bootstrapper, the machine-secrets bundle keyed by provider. Computed and sensitive; never set by practitioners.",
+				Computed:            true,
+				Sensitive:           true,
+				PlanModifiers: []planmodifier.Dynamic{
+					dynamicplanmodifier.UseNonNullStateForUnknown(),
 				},
 			},
 
@@ -627,6 +636,13 @@ func (r *ClusterResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// Seed any persisted provider secrets (none on a fresh create; present when a
+	// tainted resource is recreated) so the bootstrapper can recognize a node it
+	// already owns.
+	seedSecrets, d := providerSecretsFromDynamic(ctx, data.ProviderSecrets)
+	resp.Diagnostics.Append(d...)
+	createOpts.ProviderSecrets = seedSecrets
+
 	// Default kubeconfig output path
 	if createOpts.KubeconfigOutputPath == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -654,6 +670,10 @@ func (r *ClusterResource) Create(ctx context.Context, req resource.CreateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	secretsVal, d := providerSecretsToDynamic(ctx, result.ProviderSecrets)
+	resp.Diagnostics.Append(d...)
+	data.ProviderSecrets = secretsVal
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -730,6 +750,12 @@ func (r *ClusterResource) Update(ctx context.Context, req resource.UpdateRequest
 	reconcileOpts.SkipInit = true
 	reconcileOpts.SelfManaged = false
 
+	// Seed the secrets persisted from create so the bootstrapper recognizes the
+	// node it owns and can reach it over the Talos API.
+	seedSecrets, d := providerSecretsFromDynamic(ctx, state.ProviderSecrets)
+	resp.Diagnostics.Append(d...)
+	reconcileOpts.ProviderSecrets = seedSecrets
+
 	mgr, d := r.managerFor(ctx, &plan)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
@@ -752,6 +778,16 @@ func (r *ClusterResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	// Persist provider secrets: prefer any the bootstrapper surfaced this run,
+	// otherwise carry forward what create stored.
+	if len(result.ProviderSecrets) > 0 {
+		secretsVal, sd := providerSecretsToDynamic(ctx, result.ProviderSecrets)
+		resp.Diagnostics.Append(sd...)
+		plan.ProviderSecrets = secretsVal
+	} else {
+		plan.ProviderSecrets = state.ProviderSecrets
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -771,10 +807,13 @@ func (r *ClusterResource) Delete(ctx context.Context, req resource.DeleteRequest
 		namespace = mgmt.Namespace.ValueString()
 	}
 
+	deleteSecrets, d := providerSecretsFromDynamic(ctx, data.ProviderSecrets)
+	resp.Diagnostics.Append(d...)
 	deleteOpts := capi.DeleteClusterOptions{
 		Name:                 data.Name.ValueString(),
 		Namespace:            namespace,
 		ManagementKubeconfig: mgmtKubeconfig,
+		ProviderSecrets:      deleteSecrets,
 	}
 
 	status, _ := extractStatus(ctx, &data)

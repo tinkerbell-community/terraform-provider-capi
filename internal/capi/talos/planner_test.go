@@ -30,6 +30,12 @@ func TestPlan(t *testing.T) {
 		{name: "addons installed with addons waits ready", obs: Observation{Talos: TalosOurs, Etcd: EtcdBootstrapped, Kubernetes: K8sReachable}, hist: History{AddonsInstalled: true}, hasAddons: true, want: ActionWaitReady},
 		{name: "addons installed without addons is done", obs: Observation{Talos: TalosOurs, Etcd: EtcdBootstrapped, Kubernetes: K8sReachable}, hist: History{AddonsInstalled: true}, want: ActionDone},
 		{name: "node ready is done", obs: Observation{Talos: TalosOurs, Etcd: EtcdBootstrapped, Kubernetes: K8sNodeReady}, hist: History{AddonsInstalled: true}, hasAddons: true, want: ActionDone},
+		{name: "stuck installed foreign node boots reset image", obs: Observation{Talos: TalosForeign}, hist: History{NormalBootStuck: true, BootAttempts: 1}, want: ActionBootReset},
+		{name: "stuck installed unreachable node boots reset image", obs: Observation{Talos: TalosUnreachable}, hist: History{NormalBootStuck: true, BootAttempts: 1}, want: ActionBootReset},
+		{name: "reset image booted once then normal", obs: Observation{Talos: TalosForeign}, hist: History{NormalBootStuck: true, ResetBooted: true, BootAttempts: 2}, want: ActionBootInstaller},
+		{name: "stuck at max attempts fails", obs: Observation{Talos: TalosForeign}, hist: History{NormalBootStuck: true, BootAttempts: 3}, want: ActionFail, wantErr: ErrAttemptsExhausted},
+		{name: "ours needing reset resets to maintenance", obs: Observation{Talos: TalosOurs, Etcd: EtcdNotBootstrapped}, hist: History{NeedsReset: true}, want: ActionResetToMaintenance},
+		{name: "ours needing reset after config proceeds", obs: Observation{Talos: TalosOurs, Etcd: EtcdNotBootstrapped}, hist: History{NeedsReset: true, ConfigApplied: true}, want: ActionBootstrapEtcd},
 		{name: "unknown state fails", obs: Observation{Talos: TalosState("bogus")}, want: ActionFail, wantErr: ErrUnknownState},
 	}
 

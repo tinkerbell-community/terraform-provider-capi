@@ -311,6 +311,22 @@ func (s *simMachine) Reset(context.Context, *clientconfig.Config) error {
 	return nil
 }
 
+func (s *simMachine) ResetToMaintenance(context.Context, *clientconfig.Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.record("reset-to-maintenance")
+	if s.running != "disk" {
+		return errors.New("reset-to-maintenance: node not running from disk")
+	}
+	// Wiping STATE/EPHEMERAL drops the config and data; the disk install is
+	// intact, so the node reboots straight into maintenance mode.
+	s.installedByUs = false
+	s.etcd = false
+	s.nodeReady = false
+	s.running = "iso"
+	return nil
+}
+
 // --- Kube ---
 
 func (s *simMachine) APIReachable(context.Context) (bool, error) {

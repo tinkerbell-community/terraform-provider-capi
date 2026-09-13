@@ -20,24 +20,24 @@ func TestFactoryResolver_ExplicitOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ISO != "https://mirror.example/talos.iso" || got.Installer != "mirror.example/installer:v1" || got.UKI != "" {
+	if got.ISO != "https://mirror.example/talos.iso" || got.Installer != "mirror.example/installer:v1" || got.UKI != "" || got.ResetISO != "" {
 		t.Fatalf("Resolve() = %+v", got)
 	}
 }
 
 func TestFactoryResolver_PrecomputedSchematic(t *testing.T) {
-	// The installer keeps the pinned schematic (no POST for it); the boot ISO
-	// uses a derived schematic that strips talos.halt_if_installed, which is one
-	// POST.
-	var bootBody map[string]any
+	// The normal ISO/UKI/installer keep the pinned schematic (no POST for them);
+	// only the reset ISO uses a derived schematic that adds the wipe/halt-removal
+	// args, which is one POST.
+	var resetBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/schematics" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		raw, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(raw, &bootBody)
+		_ = json.Unmarshal(raw, &resetBody)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"boot123"}`))
+		_, _ = w.Write([]byte(`{"id":"reset123"}`))
 	}))
 	defer srv.Close()
 
@@ -49,15 +49,16 @@ func TestFactoryResolver_PrecomputedSchematic(t *testing.T) {
 	}
 	host := srv.Listener.Addr().String()
 	want := ImageURLs{
-		ISO:       srv.URL + "/image/boot123/v1.13.6/metal-arm64.iso",
-		UKI:       srv.URL + "/image/boot123/v1.13.6/metal-arm64-uki.efi",
+		ISO:       srv.URL + "/image/abc123/v1.13.6/metal-arm64.iso",
+		UKI:       srv.URL + "/image/abc123/v1.13.6/metal-arm64-uki.efi",
+		ResetISO:  srv.URL + "/image/reset123/v1.13.6/metal-arm64.iso",
 		Installer: host + "/installer/abc123:v1.13.6",
 	}
 	if got != want {
 		t.Fatalf("Resolve() = %+v, want %+v", got, want)
 	}
-	if args := kernelArgsOf(t, bootBody); len(args) != 1 || args[0] != "-talos.halt_if_installed" {
-		t.Fatalf("boot extraKernelArgs = %v, want [-talos.halt_if_installed]", args)
+	if args := kernelArgsOf(t, resetBody); len(args) != 2 || args[0] != "-talos.halt_if_installed" || args[1] != "talos.experimental.wipe=system" {
+		t.Fatalf("reset extraKernelArgs = %v, want [-talos.halt_if_installed talos.experimental.wipe=system]", args)
 	}
 }
 
@@ -99,10 +100,13 @@ func TestFactoryResolver_CreatesSchematic(t *testing.T) {
 	if got.ISO != srv.URL+"/image/deadbeef/v1.13.6/metal-amd64.iso" {
 		t.Fatalf("ISO = %q", got.ISO)
 	}
-	// Two schematics are created: the installer schematic, then the boot
-	// schematic (which additionally removes talos.halt_if_installed).
+	if got.ResetISO != srv.URL+"/image/deadbeef/v1.13.6/metal-amd64.iso" {
+		t.Fatalf("ResetISO = %q", got.ResetISO)
+	}
+	// Two schematics are created: the base schematic (normal ISO/installer),
+	// then the reset schematic (which adds the wipe/halt-removal args).
 	if len(bodies) != 2 {
-		t.Fatalf("expected 2 schematic POSTs (installer + boot), got %d", len(bodies))
+		t.Fatalf("expected 2 schematic POSTs (base + reset), got %d", len(bodies))
 	}
 	for i, b := range bodies {
 		cust, _ := b["customization"].(map[string]any)
@@ -115,8 +119,8 @@ func TestFactoryResolver_CreatesSchematic(t *testing.T) {
 	if args := kernelArgsOf(t, bodies[0]); len(args) != 1 || args[0] != "net.ifnames=0" {
 		t.Fatalf("installer extraKernelArgs = %v, want [net.ifnames=0]", args)
 	}
-	if args := kernelArgsOf(t, bodies[1]); len(args) != 2 || args[0] != "net.ifnames=0" || args[1] != "-talos.halt_if_installed" {
-		t.Fatalf("boot extraKernelArgs = %v, want [net.ifnames=0 -talos.halt_if_installed]", args)
+	if args := kernelArgsOf(t, bodies[1]); len(args) != 3 || args[0] != "net.ifnames=0" || args[1] != "-talos.halt_if_installed" || args[2] != "talos.experimental.wipe=system" {
+		t.Fatalf("reset extraKernelArgs = %v, want [net.ifnames=0 -talos.halt_if_installed talos.experimental.wipe=system]", args)
 	}
 }
 

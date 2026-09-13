@@ -36,6 +36,11 @@ type Node interface {
 	Kubeconfig(ctx context.Context, tc *clientconfig.Config) ([]byte, error)
 	// Reset wipes the node's system disk without leaving etcd and halts it.
 	Reset(ctx context.Context, tc *clientconfig.Config) error
+	// ResetToMaintenance wipes the STATE and EPHEMERAL partitions and reboots the
+	// node, so it returns without a machine config — in maintenance mode — ready
+	// to be re-provisioned. Requires Talos API access (an "ours" node); this is
+	// the graceful alternative to the one-shot reset (wipe) boot image.
+	ResetToMaintenance(ctx context.Context, tc *clientconfig.Config) error
 }
 
 // MachineryNode implements Node with the Talos machinery client.
@@ -221,4 +226,23 @@ func (n *MachineryNode) Reset(ctx context.Context, tc *clientconfig.Config) erro
 	}
 	defer func() { _ = c.Close() }()
 	return c.ResetGeneric(ctx, &machineapi.ResetRequest{Graceful: false, Reboot: false})
+}
+
+// ResetToMaintenance implements Node.
+func (n *MachineryNode) ResetToMaintenance(ctx context.Context, tc *clientconfig.Config) error {
+	c, err := n.authClient(ctx, tc)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+	// Wiping STATE removes the stored machine config, so the node reboots without
+	// one and comes up in maintenance mode; wiping EPHEMERAL clears its data.
+	return c.ResetGeneric(ctx, &machineapi.ResetRequest{
+		Graceful: false,
+		Reboot:   true,
+		SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
+			{Label: constants.StatePartitionLabel, Wipe: true},
+			{Label: constants.EphemeralPartitionLabel, Wipe: true},
+		},
+	})
 }

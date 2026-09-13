@@ -17,6 +17,11 @@ type Cluster struct {
 
 	// Namespace is the namespace where CAPI resources are managed.
 	Namespace string
+
+	// ProviderSecrets holds opaque, provider-specific secrets that must be
+	// persisted and restored across operations (e.g. the Talos machine-secrets
+	// bundle). Keys are provider-scoped. Nil when the provider keeps none.
+	ProviderSecrets map[string]string
 }
 
 // BootstrapOptions configures bootstrap cluster creation.
@@ -29,6 +34,10 @@ type BootstrapOptions struct {
 
 	// ExtraPortMappings adds port mappings to the bootstrap cluster nodes.
 	ExtraPortMappings []PortMapping
+
+	// ProviderSecrets seeds a bootstrapper with secrets persisted from a prior
+	// operation, so it can recognize and manage a node it already provisioned.
+	ProviderSecrets map[string]string
 }
 
 // PortMapping represents a port mapping for bootstrap cluster nodes.
@@ -139,6 +148,10 @@ type ClusterResult struct {
 
 	// ClusterDescription is a human-readable cluster status description.
 	ClusterDescription string
+
+	// ProviderSecrets are provider-specific secrets to persist in state (see
+	// Cluster.ProviderSecrets).
+	ProviderSecrets map[string]string
 }
 
 // CreateClusterOptions configures the full cluster creation workflow.
@@ -196,6 +209,18 @@ type CreateClusterOptions struct {
 	// Simple addons (only Provider set) are installed via clusterctl init.
 	// Rich addons (with customizations) generate AddonProvider CRs for the operator.
 	Addons []AddonConfig
+
+	// ProviderSecrets seeds provider-specific secrets persisted from a prior
+	// apply (see Cluster.ProviderSecrets), so the bootstrapper can recognize a
+	// node it already owns.
+	ProviderSecrets map[string]string
+
+	// PreTemplateManifests are raw YAML manifests applied to the management
+	// cluster BEFORE the cluster template, so resources the CAPI providers would
+	// otherwise generate (e.g. the Talos machine-secrets Secret, pre-populated
+	// from the bootstrap node's bundle so the cluster shares its PKI and needs no
+	// pivot) already exist and are adopted instead. Empty means none.
+	PreTemplateManifests [][]byte
 }
 
 // AddonConfig carries the full configuration for a CAPI addon provider,
@@ -307,4 +332,8 @@ type DeleteClusterOptions struct {
 
 	// BootstrapName is the name of the bootstrap cluster to delete.
 	BootstrapName string
+
+	// ProviderSecrets are provider-specific secrets persisted from create, used
+	// to reach a node we own during teardown (see Cluster.ProviderSecrets).
+	ProviderSecrets map[string]string
 }

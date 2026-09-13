@@ -15,7 +15,13 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"github.com/siderolabs/talos/pkg/machinery/config/machine"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	yaml "gopkg.in/yaml.v3"
 )
+
+// ProviderSecretsKey is the key under capi.Cluster.ProviderSecrets that holds
+// the Talos machine-secrets bundle (YAML). It is provider-scoped so the generic
+// secrets map can carry secrets for any bootstrap provider.
+const ProviderSecretsKey = "talos_machine_secrets"
 
 // ConfigInput is what the bootstrapper needs to render a controlplane config.
 type ConfigInput struct {
@@ -47,6 +53,30 @@ func NewSecretsBundle(talosVersion string) (*secrets.Bundle, error) {
 		return nil, fmt.Errorf("parsing talos version %q: %w", talosVersion, err)
 	}
 	return secrets.NewBundle(secrets.NewFixedClock(time.Now()), contract)
+}
+
+// MarshalSecretsBundle serializes a secrets bundle to the YAML form used by
+// `talosctl gen secrets` (and by the official Talos Terraform provider), so it
+// can be persisted in state and later restored to recognize and reset a node we
+// own.
+func MarshalSecretsBundle(b *secrets.Bundle) (string, error) {
+	out, err := yaml.Marshal(b)
+	if err != nil {
+		return "", fmt.Errorf("marshaling secrets bundle: %w", err)
+	}
+	return string(out), nil
+}
+
+// SecretsBundleFromYAML restores a secrets bundle previously produced by
+// MarshalSecretsBundle. The clock is reset to now so any certificate the
+// generator regenerates is dated from the current time.
+func SecretsBundleFromYAML(s string) (*secrets.Bundle, error) {
+	var b secrets.Bundle
+	if err := yaml.Unmarshal([]byte(s), &b); err != nil {
+		return nil, fmt.Errorf("unmarshaling secrets bundle: %w", err)
+	}
+	b.Clock = secrets.NewFixedClock(time.Now())
+	return &b, nil
 }
 
 // GenerateConfig renders a single-node controlplane machine config.

@@ -17,20 +17,22 @@ import (
 // DefaultFactoryURL is the public Talos Image Factory.
 const DefaultFactoryURL = "https://factory.talos.dev"
 
-// bootResetKernelArgs customize the boot image so an already-installed node can
-// be re-provisioned. "-talos.halt_if_installed" (the "-" prefix removes an arg)
-// drops the metal-ISO default that halts when Talos is already installed, so the
-// ISO comes up in maintenance mode instead of halting.
+// resetImageKernelArgs customize a one-shot "reset" boot image used to force an
+// already-installed node back to maintenance mode when we have no Talos API
+// access to reset it gracefully:
+//   - "-talos.halt_if_installed" (the "-" prefix removes an arg) drops the
+//     metal-ISO default that halts when Talos is already installed, so the ISO
+//     runs instead of halting.
+//   - "talos.experimental.wipe=system" wipes the system disk on boot.
 //
-// It deliberately does NOT set "talos.experimental.wipe=system". On a one-shot
-// IDER boot that arg wipes the disk and then reboots, and because the one-shot
-// boot entry is already consumed the node reboots into a now-blank disk with no
-// bootable device (confirmed on hardware: the node reads the whole ISO into RAM,
-// wipes, reboots, and is then stuck at "a bootable device has not been
-// detected"). Wiping an installed node is handled out of band instead — an
-// API-driven talosctl reset for nodes we own, otherwise the install writing a
-// fresh system to disk once the node is in maintenance.
-var bootResetKernelArgs = []string{"-talos.halt_if_installed"}
+// This is deliberately NOT the default boot image. On a one-shot IDER boot,
+// wipe=system wipes the disk and then reboots; because the one-shot boot entry
+// is already consumed, the node reboots into a now-blank disk ("a bootable
+// device has not been detected", confirmed on hardware: it reads the whole ISO
+// into RAM, wipes, reboots, and is then stuck). The reconciler therefore streams
+// this image for exactly one wipe boot and then boots the normal image, which
+// now reaches maintenance on the blank disk.
+var resetImageKernelArgs = []string{"-talos.halt_if_installed", "talos.experimental.wipe=system"}
 
 // ImageSpec describes which Talos images to boot and install.
 type ImageSpec struct {
@@ -52,10 +54,13 @@ type ImageSpec struct {
 }
 
 // ImageURLs are the resolved artifacts. UKI is empty when explicit overrides
-// were given, which disables UEFI HTTP boot.
+// were given, which disables UEFI HTTP boot. ResetISO is the one-shot wipe image
+// (see resetImageKernelArgs); it is empty when explicit ISO/Installer overrides
+// are given, since a reset image cannot be derived from a pinned ISO URL.
 type ImageURLs struct {
 	ISO       string
 	UKI       string
+	ResetISO  string
 	Installer string
 }
 
@@ -105,25 +110,26 @@ func (r *FactoryResolver) Resolve(ctx context.Context, spec ImageSpec) (ImageURL
 		return ImageURLs{}, fmt.Errorf("invalid image factory URL %q", factory)
 	}
 
-	// The installer image (and the installed system) uses the caller's schematic.
-	installerID := spec.Schematic
-	if installerID == "" {
-		installerID, err = r.createSchematic(ctx, factory, spec.Extensions, spec.KernelArgs)
+	// The normal boot media (ISO/UKI), the installer image, and the installed
+	// system all use the caller's schematic unchanged. A blank node boots this
+	// straight to maintenance; an already-installed node may halt, which the
+	// reconciler escalates from (API reset, else the reset image below).
+	baseID := spec.Schematic
+	if baseID == "" {
+		baseID, err = r.createSchematic(ctx, factory, spec.Extensions, spec.KernelArgs)
 		if err != nil {
 			return ImageURLs{}, err
 		}
 	}
 
-	// Boot media (ISO/UKI) uses a schematic that strips talos.halt_if_installed
-	// (the metal ISO sets it by default). Without it, a node that already has
-	// Talos on disk halts when booted from the ISO instead of entering
-	// maintenance mode; with it removed the node boots to maintenance and the
-	// reconciler re-installs, wiping the disk. Note: a caller that pins a
-	// schematic id with system extensions does not carry those into this boot
-	// image (the id's customization is not recoverable from the id), so the
-	// maintenance environment is the base image plus this removal.
-	bootArgs := append(append([]string(nil), spec.KernelArgs...), bootResetKernelArgs...)
-	bootID, err := r.createSchematic(ctx, factory, spec.Extensions, bootArgs)
+	// The reset media adds the wipe / halt-removal args (see
+	// resetImageKernelArgs). It is streamed for a single wipe boot only when an
+	// already-installed node cannot be reached to reset it gracefully. Note: a
+	// caller that pins a schematic id with system extensions does not carry those
+	// into this image (the id's customization is not recoverable from the id), so
+	// the reset environment is the base image plus these args.
+	resetArgs := append(append([]string(nil), spec.KernelArgs...), resetImageKernelArgs...)
+	resetID, err := r.createSchematic(ctx, factory, spec.Extensions, resetArgs)
 	if err != nil {
 		return ImageURLs{}, err
 	}
@@ -133,9 +139,10 @@ func (r *FactoryResolver) Resolve(ctx context.Context, spec ImageSpec) (ImageURL
 		arch = "amd64"
 	}
 	return ImageURLs{
-		ISO:       fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", factory, bootID, spec.Version, arch),
-		UKI:       fmt.Sprintf("%s/image/%s/%s/metal-%s-uki.efi", factory, bootID, spec.Version, arch),
-		Installer: fmt.Sprintf("%s/installer/%s:%s", u.Host, installerID, spec.Version),
+		ISO:       fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", factory, baseID, spec.Version, arch),
+		UKI:       fmt.Sprintf("%s/image/%s/%s/metal-%s-uki.efi", factory, baseID, spec.Version, arch),
+		ResetISO:  fmt.Sprintf("%s/image/%s/%s/metal-%s.iso", factory, resetID, spec.Version, arch),
+		Installer: fmt.Sprintf("%s/installer/%s:%s", u.Host, baseID, spec.Version),
 	}, nil
 }
 

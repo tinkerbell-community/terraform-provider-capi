@@ -105,6 +105,19 @@ type History struct {
 	// install). A node that is later briefly unreachable is then treated as
 	// rebooting (the post-install kexec) rather than re-imaged.
 	Installed bool
+	// NormalBootStuck is set when a normal-image boot of an already-installed
+	// node timed out without reaching maintenance (the node halted on its
+	// existing install). It escalates the next boot to the one-shot reset image.
+	NormalBootStuck bool
+	// ResetBooted is set once the one-shot reset (wipe) image has been booted, so
+	// the reconciler does not wipe repeatedly: the next boot uses the normal
+	// image against the now-blank disk.
+	ResetBooted bool
+	// NeedsReset is set when the node answers our talosconfig (ours) but must be
+	// returned to maintenance to (re)provision — e.g. a prior install we own,
+	// recognized on create via seeded secrets. It selects an API reset over the
+	// media path, since we have API access.
+	NeedsReset bool
 	// AddonsInstalled is set once the addon installer returned success.
 	AddonsInstalled bool
 }
@@ -114,17 +127,19 @@ type ActionKind string
 
 // ActionKind values.
 const (
-	ActionBootInstaller  ActionKind = "boot-installer"
-	ActionApplyConfig    ActionKind = "apply-config"
-	ActionRebootToDisk   ActionKind = "reboot-to-disk"
-	ActionDetachMedia    ActionKind = "detach-media"
-	ActionAwaitNode      ActionKind = "await-node"
-	ActionBootstrapEtcd  ActionKind = "bootstrap-etcd"
-	ActionWaitKubernetes ActionKind = "wait-kubernetes"
-	ActionInstallAddons  ActionKind = "install-addons"
-	ActionWaitReady      ActionKind = "wait-ready"
-	ActionDone           ActionKind = "done"
-	ActionFail           ActionKind = "fail"
+	ActionBootInstaller      ActionKind = "boot-installer"
+	ActionBootReset          ActionKind = "boot-reset"
+	ActionResetToMaintenance ActionKind = "reset-to-maintenance"
+	ActionApplyConfig        ActionKind = "apply-config"
+	ActionRebootToDisk       ActionKind = "reboot-to-disk"
+	ActionDetachMedia        ActionKind = "detach-media"
+	ActionAwaitNode          ActionKind = "await-node"
+	ActionBootstrapEtcd      ActionKind = "bootstrap-etcd"
+	ActionWaitKubernetes     ActionKind = "wait-kubernetes"
+	ActionInstallAddons      ActionKind = "install-addons"
+	ActionWaitReady          ActionKind = "wait-ready"
+	ActionDone               ActionKind = "done"
+	ActionFail               ActionKind = "fail"
 )
 
 // Action is the planner's decision. Err is set only for ActionFail.

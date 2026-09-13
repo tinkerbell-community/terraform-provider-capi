@@ -145,6 +145,7 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 		bootstrapCluster, err = m.bootstrapper.Create(ctx, BootstrapOptions{
 			Name:              fmt.Sprintf("%s-bootstrap", opts.Name),
 			KubernetesVersion: opts.KubernetesVersion,
+			ProviderSecrets:   opts.ProviderSecrets,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("creating bootstrap cluster: %w", err)
@@ -207,6 +208,33 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 		return nil, fmt.Errorf("generating cluster template: %w", err)
 	}
 
+	// Step 4a: Apply any pre-template manifests (e.g. a pre-populated Talos
+	// machine-secrets Secret and cluster kubeconfig Secret) so CAPI providers
+	// adopt them instead of generating fresh ones. These must land before the
+	// template's TalosControlPlane/TalosConfig objects reconcile. Manifests come
+	// from the caller and, when a bootstrap cluster was created, from the
+	// bootstrapper (built from the bootstrap node's secrets).
+	preManifests := append([][]byte(nil), opts.PreTemplateManifests...)
+	if needsBootstrap && bootstrapCluster != nil {
+		if pm, ok := m.bootstrapper.(PreTemplateManifester); ok {
+			extra, err := pm.PreTemplateManifests(ctx, opts.Name, namespace)
+			if err != nil {
+				m.cleanupOnError(ctx, bootstrapCluster)
+				return nil, fmt.Errorf("building pre-template manifests: %w", err)
+			}
+			preManifests = append(preManifests, extra...)
+		}
+	}
+	for i, pre := range preManifests {
+		if len(pre) == 0 {
+			continue
+		}
+		if err := m.applier.Apply(ctx, mgmtCluster, pre); err != nil {
+			m.cleanupOnError(ctx, bootstrapCluster)
+			return nil, fmt.Errorf("applying pre-template manifest %d: %w", i, err)
+		}
+	}
+
 	// Step 4: Apply template to management cluster
 	m.logger.Printf("Applying cluster template for %s", opts.Name)
 	if err := m.applier.Apply(ctx, mgmtCluster, manifest); err != nil {
@@ -220,6 +248,11 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 			Namespace: namespace,
 		},
 		BootstrapCluster: bootstrapCluster,
+	}
+	// Surface any provider-specific secrets the bootstrapper generated (e.g. the
+	// Talos machine-secrets bundle) so the caller can persist them in state.
+	if bootstrapCluster != nil && len(bootstrapCluster.ProviderSecrets) > 0 {
+		result.ProviderSecrets = bootstrapCluster.ProviderSecrets
 	}
 
 	// Step 5: Wait for cluster readiness
@@ -362,7 +395,7 @@ func (m *Manager) DeleteCluster(ctx context.Context, opts DeleteClusterOptions) 
 
 	// Optionally delete the bootstrap cluster
 	if opts.DeleteBootstrap && opts.BootstrapName != "" {
-		bootstrapCluster := &Cluster{Name: opts.BootstrapName}
+		bootstrapCluster := &Cluster{Name: opts.BootstrapName, ProviderSecrets: opts.ProviderSecrets}
 		if err := m.bootstrapper.Delete(ctx, bootstrapCluster); err != nil {
 			m.logger.Printf("Warning: failed to delete bootstrap cluster %s: %v", opts.BootstrapName, err)
 		}

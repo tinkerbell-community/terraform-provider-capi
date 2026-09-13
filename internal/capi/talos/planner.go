@@ -30,6 +30,13 @@ func Plan(in PlanInput) Action {
 		if h.BootAttempts >= in.MaxAttempts {
 			return Action{Kind: ActionFail, Err: ErrAttemptsExhausted}
 		}
+		// A normal-image boot got stuck on an already-installed node that we
+		// cannot reach over the Talos API to reset (foreign/unreachable):
+		// escalate to a one-shot reset (wipe) boot, exactly once. The wipe leaves
+		// a blank disk, so the following normal boot reaches maintenance.
+		if h.NormalBootStuck && !h.ResetBooted {
+			return Action{Kind: ActionBootReset}
+		}
 		return Action{Kind: ActionBootInstaller}
 
 	case TalosMaintenance:
@@ -42,6 +49,13 @@ func Plan(in PlanInput) Action {
 		return Action{Kind: ActionRebootToDisk}
 
 	case TalosOurs:
+		// A node we own that must be re-provisioned (recognized on create via
+		// seeded secrets, before any config was applied this run) is reset to
+		// maintenance over the Talos API — we have access because it is ours, so
+		// no media and no wasted boot cycle.
+		if h.NeedsReset && !h.ConfigApplied {
+			return Action{Kind: ActionResetToMaintenance}
+		}
 		switch {
 		case h.MediaAttached:
 			return Action{Kind: ActionDetachMedia}

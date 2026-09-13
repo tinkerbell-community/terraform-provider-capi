@@ -18,6 +18,19 @@ type Bootstrapper interface {
 	Exists(ctx context.Context, name string) (bool, error)
 }
 
+// PreTemplateManifester is an optional Bootstrapper capability. After the
+// bootstrap cluster is created, the manager calls it with the target CAPI
+// cluster name and namespace to obtain manifests to apply to the management
+// cluster BEFORE the cluster template. This lets a bootstrapper pre-create
+// resources the CAPI providers would otherwise generate — e.g. the Talos
+// machine-secrets Secret populated from the bootstrap node's bundle — so the
+// providers adopt the bootstrap node's identity and the cluster needs no pivot.
+// A bootstrapper that returns no manifests (or does not implement this) leaves
+// the providers to generate their own secrets.
+type PreTemplateManifester interface {
+	PreTemplateManifests(ctx context.Context, clusterName, namespace string) ([][]byte, error)
+}
+
 // Installer installs and manages CAPI components on a cluster.
 // Modeled after EKS Anywhere's CAPIClient.InitInfrastructure.
 type Installer interface {

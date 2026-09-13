@@ -16,6 +16,35 @@ import (
 	"github.com/tinkerbell-community/terraform-provider-capi/internal/capi"
 )
 
+// providerSecretsToDynamic wraps a provider-secrets map as a dynamic value
+// holding a map of strings, or a known null dynamic when the map is empty.
+func providerSecretsToDynamic(ctx context.Context, m map[string]string) (types.Dynamic, diag.Diagnostics) {
+	if len(m) == 0 {
+		return types.DynamicNull(), nil
+	}
+	mapVal, diags := types.MapValueFrom(ctx, types.StringType, m)
+	if diags.HasError() {
+		return types.DynamicNull(), diags
+	}
+	return types.DynamicValue(mapVal), diags
+}
+
+// providerSecretsFromDynamic reads a provider-secrets map from a dynamic value,
+// returning nil when unset or when the underlying value is not a string map.
+func providerSecretsFromDynamic(ctx context.Context, d types.Dynamic) (map[string]string, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if d.IsNull() || d.IsUnknown() {
+		return nil, diags
+	}
+	mapVal, ok := d.UnderlyingValue().(types.Map)
+	if !ok {
+		return nil, diags
+	}
+	out := map[string]string{}
+	diags = mapVal.ElementsAs(ctx, &out, false)
+	return out, diags
+}
+
 // ClusterResourceModel describes the resource data model using nested attributes.
 // This is the v1 schema model (nested-first design per terraform.instructions.md).
 type ClusterResourceModel struct {
@@ -23,6 +52,8 @@ type ClusterResourceModel struct {
 	KubernetesVersion types.String `tfsdk:"kubernetes_version"`
 	Flavor            types.String `tfsdk:"flavor"`
 	Id                types.String `tfsdk:"id"`
+
+	ProviderSecrets types.Dynamic `tfsdk:"provider_secrets"`
 
 	Management     types.Object `tfsdk:"management"`
 	Infrastructure types.Object `tfsdk:"infrastructure"`

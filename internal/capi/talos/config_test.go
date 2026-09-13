@@ -5,6 +5,7 @@ package talos
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/siderolabs/talos/pkg/machinery/config/configloader"
@@ -116,5 +117,30 @@ func TestGenerateConfig_InvalidPatch(t *testing.T) {
 func TestNewSecretsBundle_BadVersion(t *testing.T) {
 	if _, err := NewSecretsBundle("not-a-version"); err == nil {
 		t.Fatal("expected error for bad Talos version")
+	}
+}
+
+func TestSecretsBundleRoundTrip(t *testing.T) {
+	b, err := NewSecretsBundle("v1.13.6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	y1, err := MarshalSecretsBundle(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(y1, "secrets") || !strings.Contains(y1, "certs") {
+		t.Fatalf("serialized bundle looks empty: %q", y1)
+	}
+	got, err := SecretsBundleFromYAML(y1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	y2, err := MarshalSecretsBundle(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if y1 != y2 {
+		t.Fatalf("round-trip changed the bundle:\n--- first ---\n%s\n--- second ---\n%s", y1, y2)
 	}
 }

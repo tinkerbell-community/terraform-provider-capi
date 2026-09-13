@@ -161,7 +161,10 @@ type Bootstrapper struct {
 	last *reconciler
 }
 
-var _ capi.Bootstrapper = (*Bootstrapper)(nil)
+var (
+	_ capi.Bootstrapper          = (*Bootstrapper)(nil)
+	_ capi.PreTemplateManifester = (*Bootstrapper)(nil)
+)
 
 // New builds a Bootstrapper with real bmclib, Talos, Helm, and client-go
 // implementations unless overridden by options.
@@ -224,11 +227,64 @@ func (b *Bootstrapper) Create(ctx context.Context, opts capi.BootstrapOptions) (
 	}
 	r.sess.images = urls
 
+	// Restore persisted secrets, if any, so a node we previously provisioned is
+	// recognized as ours across runs and can be reached over the Talos API.
+	if s := opts.ProviderSecrets[ProviderSecretsKey]; s != "" {
+		if err := r.seedSecrets(s); err != nil {
+			return nil, &capi.BootstrapError{ClusterName: name, Operation: "seed-secrets", Err: err}
+		}
+	}
+
 	cluster, err := r.run(ctx)
 	if err != nil {
 		return nil, &capi.BootstrapError{ClusterName: name, Operation: "create", Err: err}
 	}
+
+	// Surface the run's secrets bundle so the caller can persist it in state.
+	if secretsYAML, serr := r.exportSecrets(); serr != nil {
+		b.logger.Printf("%s: warning: exporting talos secrets for persistence: %v", name, serr)
+	} else if secretsYAML != "" {
+		if cluster.ProviderSecrets == nil {
+			cluster.ProviderSecrets = map[string]string{}
+		}
+		cluster.ProviderSecrets[ProviderSecretsKey] = secretsYAML
+	}
 	return cluster, nil
+}
+
+// PreTemplateManifests implements capi.PreTemplateManifester. After Create, it
+// returns the Talos machine-secrets Secret and the cluster kubeconfig Secret,
+// both populated from the just-bootstrapped node, so the CAPI Talos providers
+// adopt the node's PKI and kubeconfig and the cluster needs no pivot. It returns
+// nil when there is no live session (e.g. Create was not run).
+func (b *Bootstrapper) PreTemplateManifests(_ context.Context, clusterName, namespace string) ([][]byte, error) {
+	b.mu.Lock()
+	r := b.last
+	b.mu.Unlock()
+	if r == nil {
+		return nil, nil
+	}
+
+	var manifests [][]byte
+	if r.sess.secretsBundle != nil {
+		bundleYAML, err := MarshalSecretsBundle(r.sess.secretsBundle)
+		if err != nil {
+			return nil, err
+		}
+		m, err := talosSecretsBundleManifest(clusterName, namespace, bundleYAML)
+		if err != nil {
+			return nil, err
+		}
+		manifests = append(manifests, m)
+	}
+	if len(r.sess.kubeconfig) > 0 {
+		m, err := clusterKubeconfigManifest(clusterName, namespace, r.sess.kubeconfig)
+		if err != nil {
+			return nil, err
+		}
+		manifests = append(manifests, m)
+	}
+	return manifests, nil
 }
 
 // Delete implements capi.Bootstrapper. With a live session the node is reset

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/tinkerbell-community/terraform-provider-capi/internal/capi"
@@ -79,15 +80,22 @@ func (t Timeouts) withDefaults(boot time.Duration) Timeouts {
 // session is the in-memory state of one Create run. It is never persisted.
 type session struct {
 	talosconfig     *clientconfig.Config
+	secretsBundle   *secrets.Bundle
 	machineConfig   []byte
 	images          ImageURLs
 	method          BootMethod
+	kubeconfig      []byte
 	kubeconfigPath  string
 	talosconfigPath string
 
 	// mediaRedirect is the live redirection session, kept open from attach
 	// until the node is installed and DetachMedia runs.
 	mediaRedirect RedirectHandle
+
+	// useResetImage selects the one-shot reset (wipe) image for the boot in
+	// progress instead of the normal image; the reconciler sets it only for the
+	// duration of a reset boot.
+	useResetImage bool
 }
 
 // maxActionFailures bounds consecutive failures of the same action before the run fails.
@@ -197,6 +205,10 @@ func (r *reconciler) act(ctx context.Context, kind ActionKind, obs Observation) 
 	switch kind {
 	case ActionBootInstaller:
 		return r.bootInstaller(ctx, obs)
+	case ActionBootReset:
+		return r.bootReset(ctx, obs)
+	case ActionResetToMaintenance:
+		return r.resetToMaintenance(ctx)
 	case ActionApplyConfig:
 		return r.applyConfig(ctx)
 	case ActionRebootToDisk:
@@ -218,14 +230,10 @@ func (r *reconciler) act(ctx context.Context, kind ActionKind, obs Observation) 
 	return fmt.Errorf("%w: action %s", ErrUnknownState, kind)
 }
 
-// bootInstaller drives the node into the Talos installer (maintenance mode).
-func (r *reconciler) bootInstaller(ctx context.Context, obs Observation) error {
-	r.hist.BootAttempts++
-	r.hist.ConfigApplied = false
-	r.hist.WentDownAfterApply = false
-	attempt := r.hist.BootAttempts
-	r.logger.Printf("%s: boot attempt %d/%d", r.name, attempt, r.cfg.Boot.Attempts)
-
+// armAndBoot powers the node off (if it is answering), re-attaches the currently
+// selected installer media, and powers it back on. The image served is the
+// normal or the reset image depending on r.sess.useResetImage.
+func (r *reconciler) armAndBoot(ctx context.Context, obs Observation) error {
 	if obs.Talos != TalosUnreachable {
 		if err := r.bmcDo(ctx, r.bmc.PowerOff); err != nil {
 			return err
@@ -248,7 +256,24 @@ func (r *reconciler) bootInstaller(ctx context.Context, obs Observation) error {
 	if obs.Power == PowerOn {
 		powerFn = r.bmc.PowerCycle
 	}
-	if err := r.bmcDo(ctx, powerFn); err != nil {
+	return r.bmcDo(ctx, powerFn)
+}
+
+// bootInstaller drives the node into the Talos installer (maintenance mode)
+// using the normal image.
+func (r *reconciler) bootInstaller(ctx context.Context, obs Observation) error {
+	r.hist.BootAttempts++
+	r.hist.ConfigApplied = false
+	r.hist.WentDownAfterApply = false
+	attempt := r.hist.BootAttempts
+	// A node that already answers as a configured foreign install may halt on the
+	// normal ISO instead of reaching maintenance; remember that so a stuck boot
+	// escalates to the reset image.
+	wasInstalled := obs.Talos == TalosForeign
+	r.sess.useResetImage = false
+	r.logger.Printf("%s: boot attempt %d/%d", r.name, attempt, r.cfg.Boot.Attempts)
+
+	if err := r.armAndBoot(ctx, obs); err != nil {
 		return err
 	}
 
@@ -259,9 +284,18 @@ func (r *reconciler) bootInstaller(ctx context.Context, obs Observation) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		// An already-installed node that never reached maintenance halted on its
+		// existing install. If we have a reset image and have not wiped yet,
+		// escalate the next boot to the one-shot reset (wipe) image rather than
+		// just retrying the same halt.
+		if wasInstalled && r.sess.images.ResetISO != "" && !r.hist.ResetBooted {
+			r.hist.NormalBootStuck = true
+			r.logger.Printf("%s: normal boot did not reach maintenance on an installed node; escalating to reset image", r.name)
+		}
 		r.recordAttempt(ctx, attempt, ErrBootTimeout)
 		return nil
 	}
+	r.hist.NormalBootStuck = false
 
 	// Talos has reached maintenance mode, which means it has pulled its whole
 	// system image into RAM and no longer reads the installer media. Close any
@@ -277,13 +311,63 @@ func (r *reconciler) bootInstaller(ctx context.Context, obs Observation) error {
 	return nil
 }
 
+// bootReset streams the one-shot reset (wipe) image to force an already-installed
+// node that halted on the normal image back to a blank disk. The image wipes the
+// system disk and reboots; because the one-shot boot is consumed the node then
+// comes up with no bootable device, so the following normal boot reaches
+// maintenance. It is an escalation step, not a retry, so it does not consume a
+// boot attempt — it only records that the wipe boot has happened.
+func (r *reconciler) bootReset(ctx context.Context, obs Observation) error {
+	r.hist.ResetBooted = true
+	r.sess.useResetImage = true
+	defer func() { r.sess.useResetImage = false }()
+	r.logger.Printf("%s: booting one-shot reset (wipe) image", r.name)
+
+	if err := r.armAndBoot(ctx, obs); err != nil {
+		return err
+	}
+
+	// The wipe runs autonomously once the node has read the image into RAM, then
+	// reboots into a blank disk; it never enters maintenance, so there is no
+	// Talos-API signal for completion. Hold the media for the boot window so the
+	// image is fully read (releasing it early would abort the wipe), exiting
+	// early only on the off chance the reset image reaches maintenance directly.
+	_ = waitFor(ctx, r.timeouts.Boot, r.timeouts.Poll, func(ctx context.Context) (bool, error) {
+		return r.probe(ctx) == TalosMaintenance, nil
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	r.closeMedia()
+	return nil
+}
+
+// resetToMaintenance gracefully returns an owned node to maintenance mode over
+// the Talos API (no media, no wasted boot), then waits for it to come back.
+func (r *reconciler) resetToMaintenance(ctx context.Context) error {
+	r.logger.Printf("%s: resetting owned node to maintenance over the Talos API", r.name)
+	if err := r.node.ResetToMaintenance(ctx, r.sess.talosconfig); err != nil {
+		return err
+	}
+	r.hist.NeedsReset = false
+	if err := waitFor(ctx, r.timeouts.Install, r.timeouts.Poll, func(ctx context.Context) (bool, error) {
+		return r.probe(ctx) == TalosMaintenance, nil
+	}); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		r.recordAttempt(ctx, r.hist.BootAttempts, errors.New("node did not return to maintenance after API reset"))
+	}
+	return nil
+}
+
 // attachMedia attaches installer media by the configured method. A pinned
 // method that the BMC lacks, or auto with no usable method, is ErrNoBootMethod.
 func (r *reconciler) attachMedia(ctx context.Context) error {
 	// A BMC that arms the boot itself when media is attached (Intel AMT) must
 	// not get a SetBootDevice afterwards: that would replace the armed boot.
 	virtualMedia := func(ctx context.Context) error {
-		if r.sess.images.ISO == "" {
+		if r.currentISO() == "" {
 			return fmt.Errorf("virtual media: no ISO URL: %w", ErrUnsupported)
 		}
 		// On Intel AMT, virtual media means storage redirection (IDE-R/USB-R):
@@ -297,7 +381,7 @@ func (r *reconciler) attachMedia(ctx context.Context) error {
 		var armed bool
 		if err := r.bmcDo(ctx, func(ctx context.Context) error {
 			var err error
-			armed, err = r.bmc.InsertMedia(ctx, r.sess.images.ISO)
+			armed, err = r.bmc.InsertMedia(ctx, r.currentISO())
 			return err
 		}); err != nil {
 			return err
@@ -381,24 +465,64 @@ func (r *reconciler) awaitNode(ctx context.Context) error {
 	return nil
 }
 
-// applyConfig generates (once) and applies the machine config, then waits for
-// the node to reboot and come back.
-func (r *reconciler) applyConfig(ctx context.Context) error {
-	if r.sess.machineConfig == nil {
+// configInput builds the machine-config input from the run configuration.
+func (r *reconciler) configInput() ConfigInput {
+	return ConfigInput{
+		ClusterName: r.name, Endpoint: r.cfg.Talos.Endpoint, KubernetesVersion: r.k8sVersion,
+		TalosVersion: r.cfg.Talos.Version, NodeIP: r.cfg.Machine.IP, InstallDisk: r.cfg.Machine.Disk,
+		InstallerImage: r.sess.images.Installer, Patches: r.cfg.Talos.ConfigPatches,
+	}
+}
+
+// ensureConfig generates the machine config and talosconfig once per run,
+// reusing a seeded secrets bundle when one was restored from persisted state and
+// generating a fresh bundle otherwise.
+func (r *reconciler) ensureConfig() error {
+	if r.sess.machineConfig != nil {
+		return nil
+	}
+	if r.sess.secretsBundle == nil {
 		bundle, err := NewSecretsBundle(r.cfg.Talos.Version)
 		if err != nil {
 			return err
 		}
-		gen, err := GenerateConfig(ConfigInput{
-			ClusterName: r.name, Endpoint: r.cfg.Talos.Endpoint, KubernetesVersion: r.k8sVersion,
-			TalosVersion: r.cfg.Talos.Version, NodeIP: r.cfg.Machine.IP, InstallDisk: r.cfg.Machine.Disk,
-			InstallerImage: r.sess.images.Installer, Patches: r.cfg.Talos.ConfigPatches,
-		}, bundle)
-		if err != nil {
-			return err
-		}
-		r.sess.machineConfig = gen.MachineConfig
-		r.sess.talosconfig = gen.Talosconfig
+		r.sess.secretsBundle = bundle
+	}
+	gen, err := GenerateConfig(r.configInput(), r.sess.secretsBundle)
+	if err != nil {
+		return err
+	}
+	r.sess.machineConfig = gen.MachineConfig
+	r.sess.talosconfig = gen.Talosconfig
+	return nil
+}
+
+// seedSecrets restores a persisted secrets bundle and derives this run's config
+// from it, so a node we previously provisioned is recognized as ours (not
+// foreign) and can be reached over the Talos API.
+func (r *reconciler) seedSecrets(yamlStr string) error {
+	bundle, err := SecretsBundleFromYAML(yamlStr)
+	if err != nil {
+		return err
+	}
+	r.sess.secretsBundle = bundle
+	return r.ensureConfig()
+}
+
+// exportSecrets serializes this run's secrets bundle for persistence, or returns
+// "" when no bundle was generated or seeded.
+func (r *reconciler) exportSecrets() (string, error) {
+	if r.sess.secretsBundle == nil {
+		return "", nil
+	}
+	return MarshalSecretsBundle(r.sess.secretsBundle)
+}
+
+// applyConfig generates (once) and applies the machine config, then waits for
+// the node to reboot and come back.
+func (r *reconciler) applyConfig(ctx context.Context) error {
+	if err := r.ensureConfig(); err != nil {
+		return err
 	}
 
 	r.logger.Printf("%s: applying machine configuration (reboot mode)", r.name)
@@ -464,10 +588,10 @@ func (r *reconciler) redirectISO(ctx context.Context) error {
 	if !ok || !rd.RedirectSupported(ctx) {
 		return fmt.Errorf("storage redirection unavailable: %w", ErrUnsupported)
 	}
-	if r.sess.images.ISO == "" {
+	if r.currentISO() == "" {
 		return fmt.Errorf("storage redirection: no ISO URL: %w", ErrUnsupported)
 	}
-	handle, err := rd.RedirectISO(ctx, r.sess.images.ISO)
+	handle, err := rd.RedirectISO(ctx, r.currentISO())
 	if err != nil {
 		return err
 	}
@@ -475,6 +599,16 @@ func (r *reconciler) redirectISO(ctx context.Context) error {
 	r.sess.method = BootMethodVirtualMedia
 	r.logger.Printf("%s: booting via AMT storage redirection", r.name)
 	return nil
+}
+
+// currentISO returns the ISO URL to serve for the boot in progress: the one-shot
+// reset (wipe) image while a reset boot is in progress, otherwise the normal
+// image.
+func (r *reconciler) currentISO() string {
+	if r.sess.useResetImage && r.sess.images.ResetISO != "" {
+		return r.sess.images.ResetISO
+	}
+	return r.sess.images.ISO
 }
 
 // closeMedia tears down a live redirection session, if any.
@@ -537,6 +671,7 @@ func (r *reconciler) waitKubernetes(ctx context.Context) error {
 			return fmt.Errorf("writing kubeconfig: %w", err)
 		}
 		r.sess.kubeconfigPath = path
+		r.sess.kubeconfig = rewritten
 		k, err := r.kubeFactory(path)
 		if err != nil {
 			return err
