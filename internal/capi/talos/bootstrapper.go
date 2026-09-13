@@ -91,6 +91,9 @@ func (c Config) withDefaults() Config {
 	if c.Talos.Image.Factory == "" {
 		c.Talos.Image.Factory = DefaultFactoryURL
 	}
+	if c.StateDir == "" {
+		c.StateDir = defaultStateDir()
+	}
 	c.Talos.Image.Version = c.Talos.Version
 	c.Talos.Image.Architecture = c.Talos.Architecture
 	return c

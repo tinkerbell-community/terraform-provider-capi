@@ -271,7 +271,7 @@ Optional:
 - `boot` (Attributes) How the node is booted into the Talos installer. (see [below for nested schema](#nestedatt--management--bootstrap--boot))
 - `machine` (String) Hostname of the `inventory.machine` entry to use as the bootstrap node. Its `bmc`, `network.ip_address`, and `disk.device` are used. Required when `type = "talos"`.
 - `mode` (String) How the bootstrap cluster becomes the management cluster: `pivot` (default) moves CAPI to the workload cluster and tears the bootstrap cluster down; `in_place` keeps the bootstrap node as the self-managed cluster (no pivot) — for Talos, the CAPI providers adopt the bootstrap node's pre-created secrets so it is the same cluster.
-- `state_dir` (String) Directory where the Talos machine-secrets bundle is cached so a failed apply can be retried without wiping and re-installing the node. When set, the next `terraform apply` after a failure creates the resource but resumes from the node's current state (it is recognized as ours via the cached secrets). Removed on destroy. Unset disables the cache.
+- `state_dir` (String) Optional override for where the Talos machine-secrets bundle is cached between applies. The cache lets a failed apply be retried without wiping and re-installing the node: the next `terraform apply` creates the resource but resumes from the node's current state (recognized as ours via the cached secrets), and the cache is removed on destroy. Defaults to a per-user cache directory (`os.UserCacheDir()`, falling back to the temp dir), so caching is on without configuration.
 - `talos` (Attributes) Talos version, images, and machine config patches. (see [below for nested schema](#nestedatt--management--bootstrap--talos))
 - `type` (String) Bootstrap cluster type: `kind` or `talos`.
 

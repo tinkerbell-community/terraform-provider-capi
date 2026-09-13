@@ -25,6 +25,16 @@ import (
 // secrets map can carry secrets for any bootstrap provider.
 const ProviderSecretsKey = "talos_machine_secrets"
 
+// defaultStateDir is where the resume secrets cache lives when no state_dir is
+// configured: a persistent per-user location so a failed apply can resume on the
+// next run. It falls back to the temp dir when no user cache dir is available.
+func defaultStateDir() string {
+	if d, err := os.UserCacheDir(); err == nil && d != "" {
+		return filepath.Join(d, "terraform-provider-capi")
+	}
+	return filepath.Join(os.TempDir(), "terraform-provider-capi")
+}
+
 // secretsCachePath returns the file where the machine-secrets bundle is cached
 // for resume, keyed by node so a failed apply can be retried without wiping and
 // re-installing. It returns "" when stateDir is empty (caching disabled).
