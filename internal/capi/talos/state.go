@@ -83,12 +83,19 @@ type Observation struct {
 	Talos      TalosState
 	Etcd       EtcdState
 	Kubernetes K8sState
+	// Stage is the Talos machine stage (running, booting, installing, ...) when
+	// the node is ours; empty otherwise. Recorded for observability only.
+	Stage      string
 	ObservedAt time.Time
 }
 
 // String renders the observation for logs.
 func (o Observation) String() string {
-	return fmt.Sprintf("power=%s talos=%s etcd=%s kubernetes=%s", o.Power, o.Talos, o.Etcd, o.Kubernetes)
+	s := fmt.Sprintf("power=%s talos=%s etcd=%s kubernetes=%s", o.Power, o.Talos, o.Etcd, o.Kubernetes)
+	if o.Stage != "" {
+		s += " stage=" + o.Stage
+	}
+	return s
 }
 
 // History is the in-memory memory of what the reconciler has done this run.

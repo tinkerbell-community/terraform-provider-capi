@@ -187,6 +187,9 @@ func (r *reconciler) observe(ctx context.Context) Observation {
 	} else {
 		obs.Etcd = EtcdNotBootstrapped
 	}
+	if st, err := r.node.Stage(ctx, r.sess.talosconfig); err == nil {
+		obs.Stage = st
+	}
 	if r.kube != nil {
 		if ok, _ := r.kube.APIReachable(ctx); ok {
 			obs.Kubernetes = K8sReachable
@@ -619,6 +622,13 @@ func (r *reconciler) closeMedia() {
 			r.logger.Printf("%s: closing storage redirection: %v", r.name, err)
 		}
 		r.sess.mediaRedirect = nil
+		// The redirected media is gone, so drop MediaAttached. Otherwise the
+		// planner later fires a redundant detach-media whose BMC eject/clear
+		// calls knock a just-installed AMT node off the network mid-boot (the
+		// one-shot IDER boot is already consumed, so the node boots its disk with
+		// no further BMC action). Non-AMT paths keep no redirect session here, so
+		// MediaAttached stays set and their real media is detached as before.
+		r.hist.MediaAttached = false
 	}
 }
 

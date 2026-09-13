@@ -12,10 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cosi-project/runtime/pkg/safe"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"github.com/siderolabs/talos/pkg/machinery/constants"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -41,6 +43,11 @@ type Node interface {
 	// to be re-provisioned. Requires Talos API access (an "ours" node); this is
 	// the graceful alternative to the one-shot reset (wipe) boot image.
 	ResetToMaintenance(ctx context.Context, tc *clientconfig.Config) error
+	// Stage reports the Talos machine stage (running, booting, installing, ...)
+	// for observability — a freshly-installed control plane sits in "booting"
+	// until etcd is bootstrapped, so it is logged, not used to gate progress.
+	// Requires API access; returns "" on error.
+	Stage(ctx context.Context, tc *clientconfig.Config) (string, error)
 }
 
 // MachineryNode implements Node with the Talos machinery client.
@@ -252,6 +259,24 @@ func (n *MachineryNode) Reset(ctx context.Context, tc *clientconfig.Config) erro
 	}
 	defer func() { _ = c.Close() }()
 	return c.ResetGeneric(ctx, &machineapi.ResetRequest{Graceful: false, Reboot: false})
+}
+
+// Stage implements Node.
+func (n *MachineryNode) Stage(ctx context.Context, tc *clientconfig.Config) (string, error) {
+	ctx, cancel := n.opCtx(ctx)
+	defer cancel()
+
+	c, err := n.authClient(ctx, tc)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = c.Close() }()
+
+	ms, err := safe.StateGet[*runtimeres.MachineStatus](ctx, c.COSI, runtimeres.NewMachineStatus().Metadata())
+	if err != nil {
+		return "", err
+	}
+	return ms.TypedSpec().Stage.String(), nil
 }
 
 // ResetToMaintenance implements Node.

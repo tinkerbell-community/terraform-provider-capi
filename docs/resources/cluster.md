@@ -70,6 +70,7 @@ resource "capi_cluster" "example" {
 ### Read-Only
 
 - `id` (String) Cluster identifier.
+- `provider_secrets` (Dynamic, Sensitive) Opaque, provider-specific secrets persisted so later operations can recognize and manage what this provider created — for the Talos bootstrapper, the machine-secrets bundle keyed by provider. Computed and sensitive; never set by practitioners.
 - `status` (Attributes) Computed cluster status. (see [below for nested schema](#nestedatt--status))
 
 <a id="nestedatt--infrastructure"></a>
@@ -269,6 +270,7 @@ Optional:
 - `addons` (Attributes) Helm releases and manifests installed on the bootstrap cluster before CAPI is initialized. Install a CNI such as Cilium here. (see [below for nested schema](#nestedatt--management--bootstrap--addons))
 - `boot` (Attributes) How the node is booted into the Talos installer. (see [below for nested schema](#nestedatt--management--bootstrap--boot))
 - `machine` (String) Hostname of the `inventory.machine` entry to use as the bootstrap node. Its `bmc`, `network.ip_address`, and `disk.device` are used. Required when `type = "talos"`.
+- `mode` (String) How the bootstrap cluster becomes the management cluster: `pivot` (default) moves CAPI to the workload cluster and tears the bootstrap cluster down; `in_place` keeps the bootstrap node as the self-managed cluster (no pivot) — for Talos, the CAPI providers adopt the bootstrap node's pre-created secrets so it is the same cluster.
 - `talos` (Attributes) Talos version, images, and machine config patches. (see [below for nested schema](#nestedatt--management--bootstrap--talos))
 - `type` (String) Bootstrap cluster type: `kind` or `talos`.
 

@@ -311,6 +311,21 @@ func (s *simMachine) Reset(context.Context, *clientconfig.Config) error {
 	return nil
 }
 
+func (s *simMachine) Stage(context.Context, *clientconfig.Config) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.running {
+	case "iso":
+		return "maintenance", nil
+	case "disk":
+		if s.etcd {
+			return "running", nil
+		}
+		return "booting", nil
+	}
+	return "", nil
+}
+
 func (s *simMachine) ResetToMaintenance(context.Context, *clientconfig.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
