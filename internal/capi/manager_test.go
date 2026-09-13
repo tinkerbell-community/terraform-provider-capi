@@ -68,6 +68,12 @@ func TestManager_CreateCluster_FullWorkflow(t *testing.T) {
 	if templateGen.GenerateCalls[0].Opts.ClusterName != "test-cluster" {
 		t.Errorf("expected cluster name 'test-cluster', got %q", templateGen.GenerateCalls[0].Opts.ClusterName)
 	}
+	if got := templateGen.GenerateCalls[0].Opts.Providers.InitStrings(ProviderTypeInfrastructure); len(got) != 1 || got[0] != "docker" {
+		t.Errorf("template generation must receive the provider set (got %v) so it resolves the same names as init", got)
+	}
+	if templateGen.GenerateCalls[0].Opts.InfrastructureProvider != "docker" {
+		t.Errorf("template infrastructure provider = %q", templateGen.GenerateCalls[0].Opts.InfrastructureProvider)
+	}
 
 	// Verify template was applied
 	if len(applier.ApplyCalls) != 1 {

@@ -78,6 +78,10 @@ type TemplateOptions struct {
 	// InfrastructureProvider is the infrastructure provider to use.
 	InfrastructureProvider string
 
+	// Providers is the full provider set, so template generation resolves the
+	// same provider names and fetch URLs that clusterctl init used.
+	Providers ProviderSet
+
 	// Flavor is the template flavor.
 	Flavor string
 

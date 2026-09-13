@@ -191,6 +191,7 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 		Namespace:                namespace,
 		KubernetesVersion:        opts.KubernetesVersion,
 		InfrastructureProvider:   infra.InitString(),
+		Providers:                opts.Providers,
 		Flavor:                   opts.Flavor,
 		ControlPlaneMachineCount: opts.ControlPlaneMachineCount,
 		WorkerMachineCount:       opts.WorkerMachineCount(),

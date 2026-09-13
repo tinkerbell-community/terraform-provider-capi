@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestBuildInitOptions_FillsEveryTypeAndRegistersOverrides(t *testing.T) {
+func TestProviderConfigClient_FillsEveryTypeAndRegistersOverrides(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
@@ -21,10 +21,11 @@ func TestBuildInitOptions_FillsEveryTypeAndRegistersOverrides(t *testing.T) {
 	providers.Add(ProviderConfig{Type: ProviderTypeIPAM, Name: "unifi", Version: "v0.4.1", FetchConfig: &FetchConfig{Owner: "ubiquiti-community", Repository: "cluster-api-ipam-provider-unifi"}})
 	providers.Add(ProviderConfig{Type: ProviderTypeAddon, Name: "helm"})
 
-	initOpts, _, reader, err := buildInitOptions(context.Background(), "", providers)
+	_, reader, err := newProviderConfigClient(context.Background(), "", providers)
 	if err != nil {
 		t.Fatal(err)
 	}
+	initOpts := buildInitOptions(providers)
 	if initOpts.CoreProvider != "cluster-api" {
 		t.Errorf("core = %q", initOpts.CoreProvider)
 	}
@@ -69,16 +70,17 @@ func TestBuildInitOptions_FillsEveryTypeAndRegistersOverrides(t *testing.T) {
 	}
 }
 
-func TestBuildInitOptions_AliasedBareProviderGetsDefaultURL(t *testing.T) {
+func TestProviderConfigClient_AliasedBareProviderGetsDefaultURL(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	providers := ProviderSet{}
 	providers.Add(ProviderConfig{Type: ProviderTypeInfrastructure, Name: "tinkerbell"})
 	providers.Add(ProviderConfig{Type: ProviderTypeInfrastructure, Name: "docker"})
-	initOpts, _, reader, err := buildInitOptions(context.Background(), "", providers)
+	_, reader, err := newProviderConfigClient(context.Background(), "", providers)
 	if err != nil {
 		t.Fatal(err)
 	}
+	initOpts := buildInitOptions(providers)
 	if len(reader.overrides) != 1 || reader.overrides[0].Name != "tinkerbell" ||
 		reader.overrides[0].URL != "https://github.com/tinkerbell/cluster-api-provider-tinkerbell/releases/latest/infrastructure-components.yaml" {
 		t.Errorf("tinkerbell (known to clusterctl as tinkerbell-tinkerbell) must be registered under its plain name; docker must not: %+v", reader.overrides)
@@ -88,13 +90,41 @@ func TestBuildInitOptions_AliasedBareProviderGetsDefaultURL(t *testing.T) {
 	}
 }
 
-func TestBuildInitOptions_UnknownProviderWithoutRepository(t *testing.T) {
+func TestProviderConfigClient_UnknownProviderWithoutRepository(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	providers := ProviderSet{}
 	providers.Add(ProviderConfig{Type: ProviderTypeIPAM, Name: "unifi", Version: "v0.4.1"})
-	_, _, _, err := buildInitOptions(context.Background(), "", providers)
+	_, _, err := newProviderConfigClient(context.Background(), "", providers)
 	if !errors.Is(err, ErrUnknownProviderRepository) {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// TestNewClusterctlClient_ResolvesTemplateProvider reproduces the failure seen
+// in the field: init knew "tinkerbell" but template generation, using a plain
+// clusterctl client, did not. Both must resolve through newClusterctlClient.
+func TestNewClusterctlClient_ResolvesTemplateProvider(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	providers := ProviderSet{}
+	providers.Add(ProviderConfig{Type: ProviderTypeInfrastructure, Name: "tinkerbell", Version: "v0.7.9", FetchConfig: &FetchConfig{Owner: "tinkerbell-community"}})
+	client, err := newClusterctlClient(context.Background(), "", providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// GetProvidersConfig lists what the client can resolve by name.
+	list, err := client.GetProvidersConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range list {
+		if p.Name() == "tinkerbell" && p.Type() == ProviderTypeInfrastructure.Clusterctl() {
+			if p.URL() != "https://github.com/tinkerbell-community/cluster-api-provider-tinkerbell/releases/v0.7.9/infrastructure-components.yaml" {
+				t.Errorf("tinkerbell URL = %s", p.URL())
+			}
+			return
+		}
+	}
+	t.Fatal("clusterctl client cannot resolve infrastructure provider \"tinkerbell\"")
 }

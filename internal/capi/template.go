@@ -23,7 +23,9 @@ func NewClusterctlTemplateGenerator(configPath string) *ClusterctlTemplateGenera
 
 // Generate generates a cluster template YAML using clusterctl.
 func (t *ClusterctlTemplateGenerator) Generate(ctx context.Context, cluster *Cluster, opts TemplateOptions) ([]byte, error) {
-	client, err := clusterctlclient.New(ctx, t.configPath)
+	// The template comes from the infrastructure provider's release, so the
+	// client must resolve the same provider names and URLs that init used.
+	client, err := newClusterctlClient(ctx, t.configPath, opts.Providers)
 	if err != nil {
 		return nil, &CAPIError{
 			Operation: "generate-template",
