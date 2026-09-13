@@ -293,32 +293,32 @@ resource "capi_cluster" "production" {
   }
 
   inventory = {
-    machine {
+    machine = [{
       hostname = "cp-1"
-      network {
+      network = {
         ip_address  = "192.168.1.10"
         netmask     = "255.255.255.0"
         gateway     = "192.168.1.1"
         mac_address = "aa:bb:cc:dd:ee:01"
         nameservers = ["8.8.8.8"]
       }
-      disk { device = "/dev/sda" }
-      bmc {
+      disk = { device = "/dev/sda" }
+      bmc = {
         address  = "192.168.2.10"
         username = "admin"
         password = var.bmc_password
       }
       labels = { "type" = "cp" }
-    }
+    }]
     # ... additional machines ...
   }
 
-  wait {
+  wait = {
     enabled = true
     timeout = "45m"
   }
 
-  output {
+  output = {
     kubeconfig_path = "${path.module}/production.kubeconfig"
   }
 }

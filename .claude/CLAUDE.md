@@ -20,10 +20,10 @@ The schema follows a **nested-first** design. Every concept that groups multiple
 Any attribute name composed of two or more words where the first word is a *domain* and the second is a *property* MUST be split into a nested object.
 
 ```
-✗  infrastructure_provider    →  ✓  infrastructure { provider }
-✗  bootstrap_provider         →  ✓  bootstrap { provider }
+✗  infrastructure_provider    →  ✓  infrastructure = { <name> = { version } }
+✗  bootstrap_provider         →  ✓  bootstrap = { <name> = { version } }
 ✗  management_kubeconfig      →  ✓  management { kubeconfig }
-✗  worker_machine_count       →  ✓  workers { machine_count }
+✗  worker_machine_count       →  ✓  topology { workers { machine_deployments } }
 ✗  kubeconfig_path            →  ✓  output { kubeconfig_path }
 ```
 
@@ -32,7 +32,7 @@ Any attribute name composed of two or more words where the first word is a *doma
 Compound words that describe a single concept become a top-level nested object name, not a further split.
 
 ```
-✓  control_plane { provider, machine_count }   ← "control_plane" is one subject
+✓  control_plane = { talos = { version } }      ← "control_plane" is one subject
 ✓  machine_count                                ← inside its parent, this is a simple property
 ✗  control { plane { provider } }              ← wrong: splits a single subject
 ```
@@ -58,8 +58,9 @@ All provider-computed values (endpoint, kubeconfig, CA cert, description) MUST b
 
 | Pattern | Attribute Type | When |
 |---------|---------------|------|
-| One instance | `schema.SingleNestedAttribute` | `infrastructure`, `control_plane`, `management`, `status` |
-| Ordered collection | `schema.ListNestedAttribute` | `inventory.machine` (list of machines) |
+| One instance | `schema.SingleNestedAttribute` | `management`, `topology`, `status` |
+| Named instances | `schema.MapNestedAttribute` | Provider maps: `infrastructure`, `bootstrap`, `control_plane`, `core`, `ipam`, `addon` (keyed by provider name) |
+| Ordered collection | `schema.ListNestedAttribute` | `inventory.machine`, `topology.workers.machine_deployments` |
 | Unordered unique collection | `schema.SetNestedAttribute` | Worker node groups (future) |
 | Key-value pairs | `schema.MapAttribute` | `labels`, `annotations` |
 
@@ -74,7 +75,7 @@ All nested structures MUST use `schema.SingleNestedAttribute`, `schema.ListNeste
 | Convention | Example | Rule |
 |-----------|---------|------|
 | Snake case for all attributes | `machine_count`, `ip_address` | Standard Terraform convention |
-| Nested object names are domain nouns | `infrastructure`, `control_plane`, `workers` | Not verbs, not adjectives |
+| Nested object names are domain nouns | `infrastructure`, `control_plane`, `topology` | Not verbs, not adjectives |
 | Boolean attributes use positive form | `enabled`, `self_managed` | Avoid double negatives like `skip_disabled` |
 | Computed outputs never appear in config | `status { endpoint }` | Prevent user confusion on what's configurable |
 | Sensitive attributes are marked | `bmc { password }`, `status { kubeconfig }` | Framework enforces masking in output |
@@ -90,13 +91,16 @@ resource "capi_cluster" "dev" {
   name               = "dev-cluster"
   kubernetes_version = "v1.31.0"
 
-  infrastructure {
-    provider = "docker"
-  }
+  infrastructure = { docker = {} }
 }
 ```
 
 ### 2.2 Full Configuration (Tinkerbell Bare-Metal)
+
+Providers are maps keyed by provider name, matching the cluster-api-operator
+Helm values layout. `fetch_config.owner` alone is enough to point at a fork of
+a provider clusterctl already knows; the repository name and components file
+are inferred and the pinned `version` is embedded in the release URL.
 
 ```hcl
 resource "capi_cluster" "production" {
@@ -104,33 +108,60 @@ resource "capi_cluster" "production" {
   kubernetes_version = "v1.31.0"
   flavor             = "default"
 
-  management {
+  management = {
     self_managed = true
     namespace    = "capi-system"
   }
 
-  infrastructure {
-    provider = "tinkerbell:v0.5.4"
+  core = {
+    cluster-api = {
+      manager = {
+        feature_gates = { ClusterTopology = true, MachinePool = true }
+      }
+    }
   }
 
-  bootstrap {
-    provider = "kubeadm:v1.12.2"
+  infrastructure = {
+    tinkerbell = {
+      version      = "v0.7.9"
+      fetch_config = { owner = "tinkerbell-community" }
+      manager      = { feature_gates = { ClusterTopology = true } }
+    }
   }
 
-  control_plane {
-    provider      = "kubeadm:v1.12.2"
-    machine_count = 3
+  bootstrap = {
+    talos = {
+      version      = "v0.8.2"
+      fetch_config = { owner = "sidero-community" }
+    }
   }
 
-  core {
-    provider = "cluster-api:v1.12.2"
+  control_plane = {
+    talos = {
+      version      = "v0.7.1"
+      fetch_config = { owner = "sidero-community" }
+    }
   }
 
-  workers {
-    machine_count = 5
+  ipam = {
+    unifi = {
+      version      = "v0.4.1"
+      fetch_config = { owner = "ubiquiti-community", repository = "cluster-api-ipam-provider-unifi" }
+    }
   }
 
-  inventory {
+  addon = { helm = {} }
+
+  topology = {
+    control_plane = { replicas = 3 }
+    workers = {
+      machine_deployments = [
+        { name = "md-0", replicas = 5, metadata = { labels = { tier = "worker" } } }
+      ]
+    }
+  }
+
+  inventory = {
     machine = [
       {
         hostname = "cp-1"
@@ -142,9 +173,7 @@ resource "capi_cluster" "production" {
           nameservers = ["8.8.8.8", "8.8.4.4"]
           vlan_id     = "100"
         }
-        disk = {
-          device = "/dev/sda"
-        }
+        disk = { device = "/dev/sda" }
         bmc = {
           address  = "192.168.2.10"
           username = "admin"
@@ -161,9 +190,7 @@ resource "capi_cluster" "production" {
           mac_address = "aa:bb:cc:dd:ee:11"
           nameservers = ["8.8.8.8"]
         }
-        disk = {
-          device = "/dev/sda"
-        }
+        disk = { device = "/dev/sda" }
         bmc = {
           address  = "192.168.2.20"
           username = "admin"
@@ -174,12 +201,12 @@ resource "capi_cluster" "production" {
     ]
   }
 
-  wait {
+  wait = {
     enabled = true
     timeout = "60m"
   }
 
-  output {
+  output = {
     kubeconfig_path = "~/.kube/prod-cluster.kubeconfig"
   }
 }
@@ -202,23 +229,20 @@ resource "capi_cluster" "bare_metal" {
   name               = "bm-cluster"
   kubernetes_version = "v1.31.0"
 
-  infrastructure {
-    provider = "tinkerbell:v0.5.4"
-  }
+  infrastructure = { tinkerbell = { version = "v0.7.9" } }
 
-  management {
+  management = {
     self_managed = true
   }
 
-  control_plane {
-    machine_count = 3
+  topology = {
+    control_plane = { replicas = 3 }
+    workers = {
+      machine_deployments = [{ name = "md-0", replicas = 3 }]
+    }
   }
 
-  workers {
-    machine_count = 3
-  }
-
-  inventory {
+  inventory = {
     source = "${path.module}/hardware.csv"
   }
 }
@@ -324,126 +348,124 @@ The Talos bootstrapper (`internal/capi/talos`) implements `capi.Bootstrapper`. I
 observed-state reconciler over bmclib and the Talos machinery API; nothing about the node
 is stored in Terraform state. See `docs/superpowers/specs/2026-09-12-talos-bmc-bootstrapper-design.md`.
 
-### 3.3 `infrastructure` — Infrastructure Provider
+### 3.3 Provider Maps — `core`, `infrastructure`, `bootstrap`, `control_plane`, `ipam`, `addon`
+
+Every CAPI provider category is a `schema.MapNestedAttribute` keyed by the
+provider name clusterctl uses (`cluster-api`, `docker`, `tinkerbell`, `kubeadm`,
+`talos`, `helm`, `unifi`). All six maps share one nested object built by
+`providerNestedObject()` and are created through `providerMapAttribute(desc, required)`:
 
 ```go
-"infrastructure": schema.SingleNestedAttribute{
-    MarkdownDescription: "Infrastructure provider configuration. Defines which CAPI infrastructure provider manages the cluster's machines.",
-    Required:            true,
-    PlanModifiers: []planmodifier.Object{
-        objectplanmodifier.RequiresReplace(),
-    },
+"infrastructure": providerMapAttribute("Infrastructure provider, keyed by name ...", true),
+"bootstrap":      providerMapAttribute("Bootstrap providers, keyed by name ...", false),
+// core, control_plane, ipam, addon likewise
+```
+
+The shared provider object (modeled after the cluster-api-operator provider CRDs):
+
+| Attribute | Type | Purpose |
+|---|---|---|
+| `version` | String Optional | Release tag (`v0.7.9`); omitted means clusterctl's `latest` |
+| `fetch_config` | SingleNested Optional | `{ owner, repository, url, oci }` — see 3.4 |
+| `config_variables` | Map(String) Optional | `${VAR}` substitution in component YAML |
+| `secret_config_variables` | Map(String) Optional, Sensitive | Same, for secrets |
+| `deployment` | SingleNested Optional | replicas, node_selector, service_account_name, containers[] |
+| `manager` | SingleNested Optional | profiler_address, max_concurrent_reconciles, verbosity, `feature_gates` (Map(Bool)), additional_args |
+| `additional_manifests` | String Optional | Extra YAML applied with the components |
+| `manifest_patches` | List(String) Optional | RFC 7396 merge patches (exclusive with `patches`) |
+| `patches` | ListNested Optional | Strategic merge / RFC 6902 patches with `target` selectors |
+
+An empty object (`helm = {}`) installs clusterctl's default release.
+
+**Mutability:** every provider map carries `mapplanmodifier.RequiresReplace()`.
+Providers are installed once by `clusterctl init`; Update runs with `SkipInit`.
+
+**Cardinality:** `infrastructure` is Required and must contain exactly one
+entry (it selects the cluster template). The other five are Optional and may
+hold several entries.
+
+**Backend:** entries become `capi.ProviderConfig{Name, Type, Version, FetchConfig, ...}`
+grouped in a `capi.ProviderSet` (`internal/capi/types.go`). Customizations are
+keyed by `ProviderKey{Type, Name}`, so bootstrap `talos` and control-plane
+`talos` are configured independently (`internal/capi/customize.go`).
+
+### 3.4 `fetch_config` — Friendlier Component Source
+
+```go
+"fetch_config": schema.SingleNestedAttribute{
+    Optional: true,
     Attributes: map[string]schema.Attribute{
-        "provider": schema.StringAttribute{
-            MarkdownDescription: "Infrastructure provider name and optional version (e.g., `docker`, `tinkerbell:v0.5.4`, `aws:v2.7.1`).",
-            Required:            true,
-        },
+        "owner":      schema.StringAttribute{Optional: true}, // GitHub owner/org
+        "repository": schema.StringAttribute{Optional: true}, // GitHub repository
+        "url":        schema.StringAttribute{Optional: true}, // verbatim clusterctl URL
+        "oci":        schema.StringAttribute{Optional: true}, // verbatim OCI reference
     },
 },
 ```
 
-**Mutability:** Entire block is immutable. Changing infrastructure provider requires cluster recreation.
+Resolution (`capi.ResolveFetchURL`, `internal/capi/fetch.go`):
 
-### 3.4 `bootstrap` — Bootstrap Provider
+1. `url` or `oci` set → used verbatim (they exclude `owner`/`repository`).
+2. Otherwise `https://github.com/{owner}/{repository}/releases/{version|latest}/{type}-components.yaml`,
+   where `owner`/`repository` default from clusterctl's built-in entry for the
+   provider (including the `<name>-<name>` aliases such as `tinkerbell-tinkerbell`)
+   and `{type}` is `core`, `infrastructure`, `bootstrap`, `control-plane`, `ipam`, or `addon`.
+3. A provider clusterctl does not know needs `repository` (or `url`/`oci`);
+   otherwise create fails with `ErrUnknownProviderRepository`.
 
-```go
-"bootstrap": schema.SingleNestedAttribute{
-    MarkdownDescription: "Bootstrap provider configuration. Defines how node bootstrapping is handled (e.g., kubeadm, talos).",
-    Optional:            true,
-    PlanModifiers: []planmodifier.Object{
-        objectplanmodifier.RequiresReplace(),
-    },
-    Attributes: map[string]schema.Attribute{
-        "provider": schema.StringAttribute{
-            MarkdownDescription: "Bootstrap provider name and optional version (e.g., `kubeadm:v1.12.2`).",
-            Required:            true,
-        },
-    },
-},
-```
+Pinning `version` in the URL avoids clusterctl's GitHub API call for `latest`.
+Resolved URLs are registered with clusterctl through an isolated viper-backed
+`config.Reader` (`internal/capi/clusterctl_config.go`) that still loads the
+user's `clusterctl.yaml` and environment.
 
-**Mutability:** Entire block is immutable.
-
-### 3.5 `control_plane` — Control Plane Configuration
-
-`control_plane` is a single subject (not "control" + "plane"). Groups control plane provider and replica configuration.
+### 3.5 `topology` — Machine Counts (mirrors `Cluster.spec.topology`)
 
 ```go
-"control_plane": schema.SingleNestedAttribute{
-    MarkdownDescription: "Control plane configuration. Defines the control plane provider and machine count.",
-    Optional:            true,
+"topology": schema.SingleNestedAttribute{
+    Optional: true,
     Attributes: map[string]schema.Attribute{
-        "provider": schema.StringAttribute{
-            MarkdownDescription: "Control plane provider name and optional version (e.g., `kubeadm:v1.12.2`).",
-            Optional:            true,
-            PlanModifiers: []planmodifier.String{
-                stringplanmodifier.RequiresReplace(),
+        "control_plane": schema.SingleNestedAttribute{
+            Optional: true,
+            Attributes: map[string]schema.Attribute{
+                "replicas": schema.Int64Attribute{Optional: true},
             },
         },
-        "machine_count": schema.Int64Attribute{
-            MarkdownDescription: "Number of control plane machines. Must be an odd number for HA (1, 3, 5).",
-            Optional:            true,
+        "workers": schema.SingleNestedAttribute{
+            Optional: true,
+            Attributes: map[string]schema.Attribute{
+                "machine_deployments": schema.ListNestedAttribute{ // Cluster.spec.topology.workers.machineDeployments[]
+                    Optional: true,
+                    NestedObject: schema.NestedAttributeObject{
+                        Attributes: map[string]schema.Attribute{
+                            "name":           schema.StringAttribute{Required: true},
+                            "class":          schema.StringAttribute{Optional: true},
+                            "replicas":       schema.Int64Attribute{Optional: true},
+                            "failure_domain": schema.StringAttribute{Optional: true},
+                            "metadata":       // { labels, annotations } Map(String)
+                        },
+                    },
+                },
+            },
         },
     },
 },
 ```
 
-**Mutability:**
-- `provider` — immutable (RequiresReplace)
-- `machine_count` — mutable (in-place scale via CAPI)
+**Mutability:** everything under `topology` is mutable (in-place scale).
 
-### 3.6 `core` — Core CAPI Provider
+**Backend:** `control_plane.replicas` → `CreateClusterOptions.ControlPlaneMachineCount`;
+the list → `CreateClusterOptions.MachineDeployments []capi.MachineDeploymentTopology`.
+clusterctl flavor templates expose a single `WORKER_MACHINE_COUNT`, filled from
+the **first** machine deployment's `replicas` (`CreateClusterOptions.WorkerMachineCount()`).
+Inventory validation counts workers as the sum of all replicas; names must be unique.
 
-```go
-"core": schema.SingleNestedAttribute{
-    MarkdownDescription: "Core CAPI provider configuration. Specifies the cluster-api core provider version.",
-    Optional:            true,
-    PlanModifiers: []planmodifier.Object{
-        objectplanmodifier.RequiresReplace(),
-    },
-    Attributes: map[string]schema.Attribute{
-        "provider": schema.StringAttribute{
-            MarkdownDescription: "Core provider name and version (e.g., `cluster-api:v1.12.2`).",
-            Required:            true,
-        },
-    },
-},
-```
+### 3.6 Removed Attributes
 
-**Mutability:** Entire block is immutable. Version changes trigger cluster recreation (future: provider upgrade).
+`infrastructure.provider`, `bootstrap.provider`, `control_plane.provider`,
+`control_plane.machine_count`, `core.provider`, `workers`, and the `addons`
+list were replaced by the provider maps and `topology` in schema version 2.
 
-### 3.7 `workers` — Worker Node Configuration
-
-```go
-"workers": schema.SingleNestedAttribute{
-    MarkdownDescription: "Worker node configuration. Defines worker machine count and future named node groups.",
-    Optional:            true,
-    Attributes: map[string]schema.Attribute{
-        "machine_count": schema.Int64Attribute{
-            MarkdownDescription: "Number of worker machines.",
-            Optional:            true,
-        },
-    },
-},
-```
-
-**Mutability:** `machine_count` is mutable (in-place scale via CAPI).
-
-**Future expansion** — named worker node groups will use `schema.ListNestedAttribute`:
-
-```go
-// Future: multiple worker groups
-"groups": schema.ListNestedAttribute{
-    Optional: true,
-    NestedObject: schema.NestedAttributeObject{
-        Attributes: map[string]schema.Attribute{
-            "name":          schema.StringAttribute{Required: true},
-            "machine_count": schema.Int64Attribute{Required: true},
-            "labels":        schema.MapAttribute{ElementType: types.StringType, Optional: true},
-        },
-    },
-},
-```
+### 3.7 (reserved)
 
 ### 3.8 `inventory` — Hardware Inventory
 
@@ -617,17 +639,9 @@ All computed outputs are grouped here. This block is entirely computed — pract
 },
 ```
 
-### 3.12 `addons` — Addon Configuration (Future)
+### 3.12 `addon` — Addon Providers
 
-```go
-"addons": schema.SingleNestedAttribute{
-    MarkdownDescription: "Addon configuration. ClusterResourceSets, Helm releases, or other post-provisioning add-ons.",
-    Optional:            true,
-    Attributes: map[string]schema.Attribute{
-        // Future: ClusterResourceSet bindings, Helm chart references, etc.
-    },
-},
-```
+Addon providers (e.g. `helm`) are one of the provider maps described in 3.3.
 
 ---
 
@@ -645,16 +659,17 @@ type ClusterResourceModel struct {
     Id                types.String `tfsdk:"id"`
 
     Management     types.Object `tfsdk:"management"`
-    Infrastructure types.Object `tfsdk:"infrastructure"`
-    Bootstrap      types.Object `tfsdk:"bootstrap"`
-    ControlPlane   types.Object `tfsdk:"control_plane"`
-    Core           types.Object `tfsdk:"core"`
-    Workers        types.Object `tfsdk:"workers"`
+    Core           types.Map    `tfsdk:"core"`           // map[string]ProviderModel
+    Infrastructure types.Map    `tfsdk:"infrastructure"` // exactly one entry
+    Bootstrap      types.Map    `tfsdk:"bootstrap"`
+    ControlPlane   types.Map    `tfsdk:"control_plane"`
+    IPAM           types.Map    `tfsdk:"ipam"`
+    Addon          types.Map    `tfsdk:"addon"`
+    Topology       types.Object `tfsdk:"topology"`
     Inventory      types.Object `tfsdk:"inventory"`
     Wait           types.Object `tfsdk:"wait"`
     Output         types.Object `tfsdk:"output"`
     Status         types.Object `tfsdk:"status"`
-    Addons         types.Object `tfsdk:"addons"`
 }
 ```
 
@@ -668,25 +683,45 @@ type ManagementModel struct {
     Namespace   types.String `tfsdk:"namespace"`
 }
 
-type InfrastructureModel struct {
-    Provider types.String `tfsdk:"provider"`
+// Shared by all six provider maps; one providerAttrTypes()/providerMapType().
+type ProviderModel struct {
+    Version               types.String `tfsdk:"version"`
+    FetchConfig           types.Object `tfsdk:"fetch_config"` // FetchConfigModel
+    ConfigVariables       types.Map    `tfsdk:"config_variables"`
+    SecretConfigVariables types.Map    `tfsdk:"secret_config_variables"`
+    Deployment            types.Object `tfsdk:"deployment"` // DeploymentModel
+    Manager               types.Object `tfsdk:"manager"`    // ManagerModel
+    AdditionalManifests   types.String `tfsdk:"additional_manifests"`
+    ManifestPatches       types.List   `tfsdk:"manifest_patches"`
+    Patches               types.List   `tfsdk:"patches"` // []PatchModel
 }
 
-type BootstrapModel struct {
-    Provider types.String `tfsdk:"provider"`
+type FetchConfigModel struct {
+    Owner      types.String `tfsdk:"owner"`
+    Repository types.String `tfsdk:"repository"`
+    URL        types.String `tfsdk:"url"`
+    OCI        types.String `tfsdk:"oci"`
 }
 
-type ControlPlaneModel struct {
-    Provider     types.String `tfsdk:"provider"`
-    MachineCount types.Int64  `tfsdk:"machine_count"`
+type TopologyModel struct {
+    ControlPlane types.Object `tfsdk:"control_plane"` // ControlPlaneTopologyModel
+    Workers      types.Object `tfsdk:"workers"`       // WorkersTopologyModel
 }
 
-type CoreModel struct {
-    Provider types.String `tfsdk:"provider"`
+type ControlPlaneTopologyModel struct {
+    Replicas types.Int64 `tfsdk:"replicas"`
 }
 
-type WorkersModel struct {
-    MachineCount types.Int64 `tfsdk:"machine_count"`
+type WorkersTopologyModel struct {
+    MachineDeployments types.List `tfsdk:"machine_deployments"` // []MachineDeploymentModel
+}
+
+type MachineDeploymentModel struct {
+    Name          types.String `tfsdk:"name"`
+    Class         types.String `tfsdk:"class"`
+    Replicas      types.Int64  `tfsdk:"replicas"`
+    FailureDomain types.String `tfsdk:"failure_domain"`
+    Metadata      types.Object `tfsdk:"metadata"` // TopologyMetadataModel {labels, annotations}
 }
 
 type InventoryModel struct {
@@ -827,20 +862,15 @@ For immutable nested attributes where the *entire block* triggers replacement, a
 }
 ```
 
-For nested attributes where *some child attributes* trigger replacement and others are mutable, apply `RequiresReplace()` on the individual child attributes:
+For the provider maps, apply `mapplanmodifier.RequiresReplace()` on the map
+itself (see `providerMapAttribute`). Mutable settings such as `topology`
+replica counts live in their own nested attribute with no plan modifier, so a
+scale operation never touches an immutable map:
 
 ```go
-"control_plane": schema.SingleNestedAttribute{
-    Attributes: map[string]schema.Attribute{
-        "provider": schema.StringAttribute{
-            PlanModifiers: []planmodifier.String{
-                stringplanmodifier.RequiresReplace(),  // immutable
-            },
-        },
-        "machine_count": schema.Int64Attribute{
-            // no RequiresReplace — mutable (scale in place)
-        },
-    },
+"topology": schema.SingleNestedAttribute{
+    Optional: true, // no RequiresReplace — replicas scale in place
+    // ...
 }
 ```
 
@@ -894,8 +924,8 @@ import (
     },
 },
 
-// On control_plane.machine_count — must be odd for HA
-"machine_count": schema.Int64Attribute{
+// On topology.control_plane.replicas — must be odd for HA
+"replicas": schema.Int64Attribute{
     Validators: []validator.Int64{
         int64validator.AtLeast(1),
     },
@@ -908,25 +938,36 @@ Provider-specific validation logic (e.g., Tinkerbell requires `self_managed=true
 
 ```go
 func (r *ClusterResource) validateLifecycleConfig(ctx context.Context, data *ClusterResourceModel, diags *diag.Diagnostics) {
-    infra, d := extractInfrastructure(ctx, data)
-    diags.Append(d...)
-    if diags.HasError() || infra == nil {
+    // 1. Per-entry rules (fetch_config exclusivity, patches) for every provider map.
+    names := map[capi.ProviderType][]string{}
+    for _, pm := range data.providerMaps() {
+        entries, d := extractProviders(ctx, pm.Map)
+        diags.Append(d...)
+        for _, name := range sortedProviderNames(entries) {
+            names[pm.Type] = append(names[pm.Type], name)
+            validateProviderEntry(ctx, pm.Type, name, entries[name], diags)
+        }
+    }
+
+    // 2. Exactly one infrastructure provider; it must be supported.
+    infraNames := names[capi.ProviderTypeInfrastructure]
+    if len(infraNames) != 1 {
+        diags.AddError("Invalid infrastructure configuration", "infrastructure must contain exactly one provider.")
         return
     }
 
-    provider := strings.Split(infra.Provider.ValueString(), ":")[0]
-    provider = strings.ToLower(provider)
-
-    if provider == "tinkerbell" {
+    // 3. Provider-specific rules, e.g. Tinkerbell needs self_managed and kubeadm/talos.
+    if strings.ToLower(infraNames[0]) == "tinkerbell" {
         mgmt, d := extractManagement(ctx, data)
         diags.Append(d...)
-        if mgmt == nil || mgmt.SelfManaged.IsNull() || !mgmt.SelfManaged.ValueBool() {
-            diags.AddError(
-                "Invalid Tinkerbell configuration",
-                "Tinkerbell clusters must have management.self_managed = true.",
-            )
+        if mgmt == nil || !mgmt.SelfManaged.ValueBool() {
+            diags.AddError("Invalid Tinkerbell configuration", "Tinkerbell clusters must have management.self_managed = true.")
         }
     }
+
+    // 4. Topology (unique machine deployment names) feeds inventory validation.
+    cpCount, mds, d := extractTopology(ctx, data)
+    // ...
 }
 ```
 
@@ -1029,77 +1070,34 @@ func buildCreateOptions(ctx context.Context, data *ClusterResourceModel) (*capi.
         opts.Flavor = data.Flavor.ValueString()
     }
 
-    // Management
-    if mgmt, d := extractManagement(ctx, data); mgmt != nil {
-        diags.Append(d...)
-        if !mgmt.Kubeconfig.IsNull() {
-            opts.ManagementKubeconfig = mgmt.Kubeconfig.ValueString()
-        }
-        opts.SkipInit = mgmt.SkipInit.ValueBool()
-        opts.SelfManaged = mgmt.SelfManaged.ValueBool()
-        if !mgmt.Namespace.IsNull() {
-            opts.Namespace = mgmt.Namespace.ValueString()
-        }
-    }
-
-    // Infrastructure (required)
-    infra, d := extractInfrastructure(ctx, data)
+    // Management (kubeconfig, skip_init, self_managed, namespace, bootstrap mode)
+    mgmt, d := extractManagement(ctx, data)
     diags.Append(d...)
-    if infra != nil {
-        opts.InfrastructureProvider = infra.Provider.ValueString()
-    }
+    // ...
 
-    // Bootstrap
-    if bs, d := extractBootstrap(ctx, data); bs != nil {
-        diags.Append(d...)
-        opts.BootstrapProvider = bs.Provider.ValueString()
-    }
+    // Providers: all six maps flattened into a ProviderSet. Each entry is
+    // converted by buildProviderConfig(ctx, name, type, ProviderModel), which
+    // handles version, fetch_config, config variables, deployment, manager,
+    // manifests and patches. Map keys are visited in sorted order.
+    providers, d := extractProviderSet(ctx, data)
+    diags.Append(d...)
+    opts.Providers = providers
 
-    // Control Plane
-    if cp, d := extractControlPlane(ctx, data); cp != nil {
-        diags.Append(d...)
-        if !cp.Provider.IsNull() {
-            opts.ControlPlaneProvider = cp.Provider.ValueString()
-        }
-        if !cp.MachineCount.IsNull() {
-            count := cp.MachineCount.ValueInt64()
-            opts.ControlPlaneMachineCount = &count
-        }
-    }
+    // Topology
+    cpCount, mds, d := extractTopology(ctx, data)
+    diags.Append(d...)
+    opts.ControlPlaneMachineCount = cpCount
+    opts.MachineDeployments = mds
 
-    // Core
-    if core, d := extractCore(ctx, data); core != nil {
-        diags.Append(d...)
-        opts.CoreProvider = core.Provider.ValueString()
-    }
-
-    // Workers
-    if w, d := extractWorkers(ctx, data); w != nil {
-        diags.Append(d...)
-        if !w.MachineCount.IsNull() {
-            count := w.MachineCount.ValueInt64()
-            opts.WorkerMachineCount = &count
-        }
-    }
-
-    // Wait
-    if wait, d := extractWait(ctx, data); wait != nil {
-        diags.Append(d...)
-        opts.WaitForReady = wait.Enabled.ValueBool()
-        // Parse timeout if provided
-    }
-
-    // Output
-    if out, d := extractOutput(ctx, data); out != nil {
-        diags.Append(d...)
-        if !out.KubeconfigPath.IsNull() {
-            opts.KubeconfigOutputPath = out.KubeconfigPath.ValueString()
-        }
-    }
-
+    // Wait, Output ...
     return opts, diags
 }
 ```
+
+Helpers: `extractProviders(ctx, types.Map) (map[string]ProviderModel, diag.Diagnostics)`
+returns nil for a null map; `data.providerMaps()` lists the six maps with their
+`capi.ProviderType`; `providerMapValue(ctx, "name:version")` builds a one-entry
+map for the state upgraders.
 
 ### 7.2 Populating State from ClusterResult
 
@@ -1192,9 +1190,11 @@ func upgradeClusterResourceStateV0ToV1(ctx context.Context, req resource.Upgrade
     }
     v1.Management, _ = types.ObjectValueFrom(ctx, managementAttrTypes(), mgmt)
 
-    // Map infrastructure
-    infra := InfrastructureModel{Provider: v0.InfrastructureProvider}
-    v1.Infrastructure, _ = types.ObjectValueFrom(ctx, infrastructureAttrTypes(), infra)
+    // Map infrastructure: the legacy "name:version" string becomes a one-entry map
+    v1.Infrastructure, _ = providerMapValue(ctx, v0.InfrastructureProvider.ValueString())
+
+    // Counts become topology (worker count -> one machine deployment "md-0")
+    v1.Topology, _ = legacyTopologyObject(ctx, v0.ControlPlaneMachineCount, v0.WorkerMachineCount)
 
     // ... repeat for all nested blocks ...
 
@@ -1217,8 +1217,13 @@ func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest
 
 | Version | Description | Breaking Changes |
 |---------|-------------|-----------------|
-| 0 | Flat attributes (current) | N/A (initial) |
+| 0 | Flat attributes | N/A (initial) |
 | 1 | Nested objects + inventory | All provider/count fields moved into nested objects |
+| 2 | Provider maps, `fetch_config` owner/repository, `topology`, `ipam` (current) | `provider = "name:version"` strings become map keys + `version`; `workers` and `addons` removed; counts move to `topology` (`replicas`) |
+
+Both the v0 and v1 upgraders emit v2 directly (Terraform does not chain them).
+The v1→v2 upgrader rewrites the raw state JSON (`cluster_resource_upgrade.go`);
+a legacy worker count becomes one machine deployment named `md-0`.
 
 ---
 
@@ -1308,12 +1313,15 @@ Quick reference for where every attribute lives in the schema:
 | `skip_init` | `management.skip_init` | `BoolAttribute` Optional | **Mutable** |
 | `self_managed` | `management.self_managed` | `BoolAttribute` Optional | Immutable |
 | `target_namespace` | `management.namespace` | `StringAttribute` Optional | Immutable |
-| `infrastructure_provider` | `infrastructure.provider` | `StringAttribute` Required | Immutable |
-| `bootstrap_provider` | `bootstrap.provider` | `StringAttribute` Optional | Immutable |
-| `control_plane_provider` | `control_plane.provider` | `StringAttribute` Optional | Immutable |
-| `control_plane_machine_count` | `control_plane.machine_count` | `Int64Attribute` Optional | **Mutable** |
-| `core_provider` | `core.provider` | `StringAttribute` Optional | Immutable |
-| `worker_machine_count` | `workers.machine_count` | `Int64Attribute` Optional | **Mutable** |
+| `infrastructure_provider` | `infrastructure.<name>` (+ `.version`) | `MapNestedAttribute` Required | Immutable |
+| `bootstrap_provider` | `bootstrap.<name>` | `MapNestedAttribute` Optional | Immutable |
+| `control_plane_provider` | `control_plane.<name>` | `MapNestedAttribute` Optional | Immutable |
+| `core_provider` | `core.<name>` | `MapNestedAttribute` Optional | Immutable |
+| *(new)* | `ipam.<name>` | `MapNestedAttribute` Optional | Immutable |
+| *(was `addons[]`)* | `addon.<name>` | `MapNestedAttribute` Optional | Immutable |
+| *(new)* | `<map>.<name>.fetch_config.{owner,repository,url,oci}` | `SingleNestedAttribute` Optional | Immutable |
+| `control_plane_machine_count` | `topology.control_plane.replicas` | `Int64Attribute` Optional | **Mutable** |
+| `worker_machine_count` | `topology.workers.machine_deployments[].replicas` | `ListNestedAttribute` Optional | **Mutable** |
 | *(new)* | `inventory.source` | `StringAttribute` Optional | **Mutable** |
 | *(new)* | `inventory.machine[]` | `ListNestedAttribute` Optional | **Mutable** |
 | `wait_for_ready` | `wait.enabled` | `BoolAttribute` Optional | **Mutable** |
