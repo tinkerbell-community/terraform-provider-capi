@@ -199,6 +199,13 @@ type CreateClusterOptions struct {
 	// SelfManaged moves CAPI management to the workload cluster.
 	SelfManaged bool
 
+	// InPlace keeps the bootstrap cluster as the self-managed management cluster
+	// instead of pivoting CAPI to a separate workload cluster and tearing the
+	// bootstrap cluster down. With a Talos bootstrapper this makes the bootstrap
+	// node the cluster (its pre-created secrets are adopted by the CAPI providers)
+	// so no pivot is needed. Ignored unless SelfManaged is set.
+	InPlace bool
+
 	// Wait configures timeout and poll options.
 	Wait WaitOptions
 

@@ -4,12 +4,23 @@
 package talos
 
 import (
+	stdx509 "crypto/x509"
 	"fmt"
+	"time"
 
+	cryptox509 "github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	sigsyaml "sigs.k8s.io/yaml"
 )
+
+// adminKubeconfigValidity is how long the derived admin client certificate is
+// valid. It is minted from the cluster's stored K8s CA, so it can be reissued at
+// any time from the same secrets bundle.
+const adminKubeconfigValidity = 10 * 365 * 24 * time.Hour
 
 const (
 	// clusterNameLabel is CAPI's cluster.x-k8s.io/cluster-name label, set on the
@@ -67,6 +78,52 @@ func clusterKubeconfigManifest(clusterName, namespace string, kubeconfig []byte)
 	out, err := sigsyaml.Marshal(sec)
 	if err != nil {
 		return nil, fmt.Errorf("rendering cluster kubeconfig Secret: %w", err)
+	}
+	return out, nil
+}
+
+// deriveKubeconfigFromBundle builds an admin kubeconfig purely from the cluster's
+// stored secrets bundle — no running cluster required. It mints an admin client
+// certificate (CN=admin, O=system:masters) from the bundle's Kubernetes CA and
+// assembles a kubeconfig pointing at endpoint, mirroring the Talos provider's
+// static cluster-kubeconfig derivation.
+func deriveKubeconfigFromBundle(bundle *secrets.Bundle, clusterName, endpoint string) ([]byte, error) {
+	if bundle == nil || bundle.Certs == nil || bundle.Certs.K8s == nil {
+		return nil, fmt.Errorf("secrets bundle has no kubernetes CA")
+	}
+	ca, err := cryptox509.NewCertificateAuthorityFromCertificateAndKey(bundle.Certs.K8s)
+	if err != nil {
+		return nil, fmt.Errorf("loading kubernetes CA from bundle: %w", err)
+	}
+	now := time.Now()
+	admin, err := cryptox509.NewKeyPair(ca,
+		cryptox509.CommonName("admin"),
+		cryptox509.Organization("system:masters"),
+		cryptox509.NotBefore(now.Add(-time.Hour)),
+		cryptox509.NotAfter(now.Add(adminKubeconfigValidity)),
+		cryptox509.KeyUsage(stdx509.KeyUsageDigitalSignature|stdx509.KeyUsageKeyEncipherment),
+		cryptox509.ExtKeyUsage([]stdx509.ExtKeyUsage{stdx509.ExtKeyUsageClientAuth}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("minting admin client certificate: %w", err)
+	}
+
+	name := "admin@" + clusterName
+	cfg := clientcmdapi.Config{
+		Clusters: map[string]*clientcmdapi.Cluster{
+			clusterName: {Server: endpoint, CertificateAuthorityData: bundle.Certs.K8s.Crt},
+		},
+		AuthInfos: map[string]*clientcmdapi.AuthInfo{
+			name: {ClientCertificateData: admin.CrtPEM, ClientKeyData: admin.KeyPEM},
+		},
+		Contexts: map[string]*clientcmdapi.Context{
+			name: {Cluster: clusterName, AuthInfo: name},
+		},
+		CurrentContext: name,
+	}
+	out, err := clientcmd.Write(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("writing kubeconfig: %w", err)
 	}
 	return out, nil
 }

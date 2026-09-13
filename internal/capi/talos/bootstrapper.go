@@ -265,25 +265,34 @@ func (b *Bootstrapper) PreTemplateManifests(_ context.Context, clusterName, name
 		return nil, nil
 	}
 
+	if r.sess.secretsBundle == nil {
+		return nil, nil
+	}
+
 	var manifests [][]byte
-	if r.sess.secretsBundle != nil {
-		bundleYAML, err := MarshalSecretsBundle(r.sess.secretsBundle)
-		if err != nil {
-			return nil, err
-		}
-		m, err := talosSecretsBundleManifest(clusterName, namespace, bundleYAML)
-		if err != nil {
-			return nil, err
-		}
-		manifests = append(manifests, m)
+	bundleYAML, err := MarshalSecretsBundle(r.sess.secretsBundle)
+	if err != nil {
+		return nil, err
 	}
-	if len(r.sess.kubeconfig) > 0 {
-		m, err := clusterKubeconfigManifest(clusterName, namespace, r.sess.kubeconfig)
-		if err != nil {
-			return nil, err
-		}
-		manifests = append(manifests, m)
+	secretManifest, err := talosSecretsBundleManifest(clusterName, namespace, bundleYAML)
+	if err != nil {
+		return nil, err
 	}
+	manifests = append(manifests, secretManifest)
+
+	// Derive the cluster kubeconfig statically from the same bundle (no running
+	// cluster needed), so CAPI has <cluster>-kubeconfig before the control plane
+	// comes up.
+	kubeconfig, err := deriveKubeconfigFromBundle(r.sess.secretsBundle, clusterName, r.cfg.Talos.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	kubeconfigManifest, err := clusterKubeconfigManifest(clusterName, namespace, kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	manifests = append(manifests, kubeconfigManifest)
+
 	return manifests, nil
 }
 

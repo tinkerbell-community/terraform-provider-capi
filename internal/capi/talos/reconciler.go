@@ -16,6 +16,8 @@ import (
 
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/generate/secrets"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/tinkerbell-community/terraform-provider-capi/internal/capi"
@@ -84,7 +86,6 @@ type session struct {
 	machineConfig   []byte
 	images          ImageURLs
 	method          BootMethod
-	kubeconfig      []byte
 	kubeconfigPath  string
 	talosconfigPath string
 
@@ -639,12 +640,29 @@ func (r *reconciler) detachMedia(ctx context.Context) {
 // bootstrapEtcd issues Bootstrap and waits for etcd. The RPC error is only
 // logged: a node that is already bootstrapped rejects the call but passes the wait.
 func (r *reconciler) bootstrapEtcd(ctx context.Context) error {
-	if err := r.node.Bootstrap(ctx, r.sess.talosconfig); err != nil {
-		r.logger.Printf("%s: bootstrap rpc: %v (ignored if etcd comes up)", r.name, err)
-	}
+	// Retry Bootstrap until it takes, mirroring the upstream Talos provider: a
+	// freshly-installed node flaps as it settles (apid briefly refuses
+	// connections during its post-install reboots), so a single Bootstrap RPC
+	// often hits a transient error. Any error but InvalidArgument is retried;
+	// InvalidArgument means etcd is already bootstrapped, so we stop and treat it
+	// as done. The Bootstrap RPC's own success is the signal — we do not poll
+	// etcd here (that call blocks on a node whose etcd is still "waiting to
+	// join").
+	logged := false
 	if err := waitFor(ctx, r.timeouts.Bootstrap, r.timeouts.Poll, func(ctx context.Context) (bool, error) {
-		st, err := r.node.EtcdState(ctx, r.sess.talosconfig)
-		return err == nil && st == EtcdBootstrapped, nil
+		err := r.node.Bootstrap(ctx, r.sess.talosconfig)
+		switch {
+		case err == nil:
+			return true, nil
+		case status.Code(err) == codes.InvalidArgument:
+			return true, nil
+		default:
+			if !logged {
+				r.logger.Printf("%s: bootstrap rpc: %v (retrying until it takes)", r.name, err)
+				logged = true
+			}
+			return false, nil
+		}
 	}); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -671,7 +689,6 @@ func (r *reconciler) waitKubernetes(ctx context.Context) error {
 			return fmt.Errorf("writing kubeconfig: %w", err)
 		}
 		r.sess.kubeconfigPath = path
-		r.sess.kubeconfig = rewritten
 		k, err := r.kubeFactory(path)
 		if err != nil {
 			return err

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/clientcmd"
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
@@ -51,5 +52,31 @@ func TestClusterKubeconfigManifest(t *testing.T) {
 	}
 	if !strings.Contains(string(sec.Data["value"]), "kind: Config") {
 		t.Fatalf("value data = %q", sec.Data["value"])
+	}
+}
+
+func TestDeriveKubeconfigFromBundle(t *testing.T) {
+	bundle, err := NewSecretsBundle("v1.13.6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kc, err := deriveKubeconfigFromBundle(bundle, "prod", "https://10.0.0.160:6443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := clientcmd.Load(kc)
+	if err != nil {
+		t.Fatalf("derived kubeconfig does not parse: %v", err)
+	}
+	cl, ok := cfg.Clusters["prod"]
+	if !ok || cl.Server != "https://10.0.0.160:6443" {
+		t.Fatalf("cluster entry = %+v", cfg.Clusters)
+	}
+	if len(cl.CertificateAuthorityData) == 0 {
+		t.Fatal("no CA data in derived kubeconfig")
+	}
+	ai, ok := cfg.AuthInfos["admin@prod"]
+	if !ok || len(ai.ClientCertificateData) == 0 || len(ai.ClientKeyData) == 0 {
+		t.Fatalf("admin auth info = %+v", cfg.AuthInfos)
 	}
 }

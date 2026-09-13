@@ -290,8 +290,10 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 	}
 
 	// Step 7: Self-managed pivot (optional)
-	// This mirrors EKS Anywhere's moveClusterManagementTask
-	if opts.SelfManaged && needsBootstrap && kubeconfig != "" {
+	// This mirrors EKS Anywhere's moveClusterManagementTask. In-place skips the
+	// move entirely: the bootstrap cluster stays as the management cluster (for
+	// Talos, the bootstrap node IS the cluster via adopted secrets).
+	if opts.SelfManaged && !opts.InPlace && needsBootstrap && kubeconfig != "" {
 		m.logger.Printf("Pivoting CAPI management to workload cluster %s", opts.Name)
 
 		// Write workload kubeconfig for the move operation
@@ -340,8 +342,8 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 		m.logger.Printf("CAPI management pivoted to %s", opts.Name)
 	}
 
-	// Step 8: Clean up bootstrap cluster (if we created one and pivot succeeded)
-	if needsBootstrap && opts.SelfManaged && bootstrapCluster != nil {
+	// Step 8: Clean up bootstrap cluster (only after a pivot; in-place keeps it)
+	if needsBootstrap && opts.SelfManaged && !opts.InPlace && bootstrapCluster != nil {
 		m.logger.Printf("Deleting bootstrap cluster %s", bootstrapCluster.Name)
 		if err := m.bootstrapper.Delete(ctx, bootstrapCluster); err != nil {
 			m.logger.Printf("Warning: failed to delete bootstrap cluster %s: %v", bootstrapCluster.Name, err)

@@ -139,6 +139,12 @@ func (r *ClusterResource) Schema(ctx context.Context, req resource.SchemaRequest
 								Computed:            true,
 								Default:             stringdefault.StaticString("kind"),
 							},
+							"mode": schema.StringAttribute{
+								MarkdownDescription: "How the bootstrap cluster becomes the management cluster: `pivot` (default) moves CAPI to the workload cluster and tears the bootstrap cluster down; `in_place` keeps the bootstrap node as the self-managed cluster (no pivot) — for Talos, the CAPI providers adopt the bootstrap node's pre-created secrets so it is the same cluster.",
+								Optional:            true,
+								Computed:            true,
+								Default:             stringdefault.StaticString("pivot"),
+							},
 							"machine": schema.StringAttribute{
 								MarkdownDescription: "Hostname of the `inventory.machine` entry to use as the bootstrap node. Its `bmc`, `network.ip_address`, and `disk.device` are used. Required when `type = \"talos\"`.",
 								Optional:            true,
@@ -1193,6 +1199,14 @@ func validateManagementBootstrap(ctx context.Context, data *ClusterResourceModel
 	diags.Append(d...)
 	if bs == nil {
 		return
+	}
+
+	if !bs.Mode.IsNull() && !bs.Mode.IsUnknown() {
+		switch bs.Mode.ValueString() {
+		case "", "pivot", "in_place":
+		default:
+			diags.AddError(summary, fmt.Sprintf("management.bootstrap.mode %q is not supported. Supported: pivot, in_place.", bs.Mode.ValueString()))
+		}
 	}
 
 	typ := "kind"

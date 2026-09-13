@@ -80,6 +80,7 @@ type ManagementModel struct {
 // ManagementBootstrapModel configures the transient bootstrap cluster.
 type ManagementBootstrapModel struct {
 	Type    types.String `tfsdk:"type"`
+	Mode    types.String `tfsdk:"mode"`
 	Machine types.String `tfsdk:"machine"`
 	Boot    types.Object `tfsdk:"boot"`   // BootModel
 	Talos   types.Object `tfsdk:"talos"`  // TalosModel
@@ -290,6 +291,7 @@ func managementAttrTypes() map[string]attr.Type {
 func managementBootstrapAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"type":    types.StringType,
+		"mode":    types.StringType,
 		"machine": types.StringType,
 		"boot":    types.ObjectType{AttrTypes: bootAttrTypes()},
 		"talos":   types.ObjectType{AttrTypes: talosAttrTypes()},
@@ -802,6 +804,10 @@ func buildCreateOptions(ctx context.Context, data *ClusterResourceModel) (*capi.
 		opts.SelfManaged = mgmt.SelfManaged.ValueBool()
 		if !mgmt.Namespace.IsNull() {
 			opts.Namespace = mgmt.Namespace.ValueString()
+		}
+		if bs, bd := extractManagementBootstrap(ctx, mgmt); bs != nil {
+			diags.Append(bd...)
+			opts.InPlace = bs.Mode.ValueString() == "in_place"
 		}
 	}
 

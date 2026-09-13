@@ -48,11 +48,25 @@ type MachineryNode struct {
 	// endpoint is "ip" or "ip:port"; the client appends port 50000 when missing.
 	endpoint    string
 	dialTimeout time.Duration
+	// opTimeout bounds a single API call (dial + RPC). Without it, calls like
+	// EtcdMemberList block indefinitely while the node is up but its etcd is
+	// still "waiting to join the cluster" (pre-bootstrap), which would freeze the
+	// reconciler's observe loop.
+	opTimeout time.Duration
 }
 
 // NewMachineryNode returns a Node for the Talos API at ip (port 50000).
 func NewMachineryNode(ip string) *MachineryNode {
-	return &MachineryNode{endpoint: ip, dialTimeout: 10 * time.Second}
+	return &MachineryNode{endpoint: ip, dialTimeout: 10 * time.Second, opTimeout: 20 * time.Second}
+}
+
+// opCtx bounds a single Talos API call so a node that accepts connections but
+// whose service is not yet serving cannot block the caller forever.
+func (n *MachineryNode) opCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	if n.opTimeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, n.opTimeout)
 }
 
 // insecureClient dials without verifying the server certificate and records
@@ -179,6 +193,9 @@ func isMaintenanceTeardownErr(ctx context.Context, err error) bool {
 
 // Bootstrap implements Node.
 func (n *MachineryNode) Bootstrap(ctx context.Context, tc *clientconfig.Config) error {
+	ctx, cancel := n.opCtx(ctx)
+	defer cancel()
+
 	c, err := n.authClient(ctx, tc)
 	if err != nil {
 		return err
@@ -190,6 +207,9 @@ func (n *MachineryNode) Bootstrap(ctx context.Context, tc *clientconfig.Config) 
 // EtcdState implements Node. Any error listing members is reported as not
 // bootstrapped, because etcd is not serving.
 func (n *MachineryNode) EtcdState(ctx context.Context, tc *clientconfig.Config) (EtcdState, error) {
+	ctx, cancel := n.opCtx(ctx)
+	defer cancel()
+
 	c, err := n.authClient(ctx, tc)
 	if err != nil {
 		return EtcdUnknown, err
@@ -210,6 +230,9 @@ func (n *MachineryNode) EtcdState(ctx context.Context, tc *clientconfig.Config) 
 
 // Kubeconfig implements Node.
 func (n *MachineryNode) Kubeconfig(ctx context.Context, tc *clientconfig.Config) ([]byte, error) {
+	ctx, cancel := n.opCtx(ctx)
+	defer cancel()
+
 	c, err := n.authClient(ctx, tc)
 	if err != nil {
 		return nil, err
@@ -220,6 +243,9 @@ func (n *MachineryNode) Kubeconfig(ctx context.Context, tc *clientconfig.Config)
 
 // Reset implements Node.
 func (n *MachineryNode) Reset(ctx context.Context, tc *clientconfig.Config) error {
+	ctx, cancel := n.opCtx(ctx)
+	defer cancel()
+
 	c, err := n.authClient(ctx, tc)
 	if err != nil {
 		return err
@@ -230,6 +256,9 @@ func (n *MachineryNode) Reset(ctx context.Context, tc *clientconfig.Config) erro
 
 // ResetToMaintenance implements Node.
 func (n *MachineryNode) ResetToMaintenance(ctx context.Context, tc *clientconfig.Config) error {
+	ctx, cancel := n.opCtx(ctx)
+	defer cancel()
+
 	c, err := n.authClient(ctx, tc)
 	if err != nil {
 		return err
