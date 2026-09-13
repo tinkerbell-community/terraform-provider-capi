@@ -133,6 +133,10 @@ func NewManager(opts ...ManagerOption) *Manager {
 func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) (*ClusterResult, error) {
 	m.logger.Printf("Starting cluster creation: %s", opts.Name)
 
+	if _, ok := opts.Providers.Infrastructure(); !ok {
+		return nil, fmt.Errorf("creating cluster %s: no infrastructure provider configured", opts.Name)
+	}
+
 	// Determine the management cluster to use
 	var mgmtCluster *Cluster
 	var bootstrapCluster *Cluster
@@ -169,18 +173,7 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 	}
 	if !opts.SkipInit {
 		m.logger.Printf("Installing CAPI providers on %s", mgmtCluster.Name)
-		initOpts := InitOptions{
-			CoreProvider:            opts.CoreProvider,
-			InfrastructureProviders: []string{opts.InfrastructureProvider},
-			AddonProviders:          AddonProviderStrings(opts.Addons),
-			Addons:                  opts.Addons,
-		}
-		if opts.BootstrapProvider != "" {
-			initOpts.BootstrapProviders = []string{opts.BootstrapProvider}
-		}
-		if opts.ControlPlaneProvider != "" {
-			initOpts.ControlPlaneProviders = []string{opts.ControlPlaneProvider}
-		}
+		initOpts := InitOptions{Providers: opts.Providers}
 
 		if err := m.installer.Init(ctx, mgmtCluster, initOpts); err != nil {
 			m.cleanupOnError(ctx, bootstrapCluster)
@@ -192,14 +185,15 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 	// Step 3: Generate cluster template
 	m.logger.Printf("Generating cluster template for %s", opts.Name)
 
+	infra, _ := opts.Providers.Infrastructure()
 	templateOpts := TemplateOptions{
 		ClusterName:              opts.Name,
 		Namespace:                namespace,
 		KubernetesVersion:        opts.KubernetesVersion,
-		InfrastructureProvider:   opts.InfrastructureProvider,
+		InfrastructureProvider:   infra.InitString(),
 		Flavor:                   opts.Flavor,
 		ControlPlaneMachineCount: opts.ControlPlaneMachineCount,
-		WorkerMachineCount:       opts.WorkerMachineCount,
+		WorkerMachineCount:       opts.WorkerMachineCount(),
 	}
 
 	manifest, err := m.templateGen.Generate(ctx, mgmtCluster, templateOpts)
@@ -310,18 +304,7 @@ func (m *Manager) CreateCluster(ctx context.Context, opts CreateClusterOptions) 
 		}
 
 		// Install CAPI on the workload cluster before move
-		initOpts := InitOptions{
-			CoreProvider:            opts.CoreProvider,
-			InfrastructureProviders: []string{opts.InfrastructureProvider},
-			AddonProviders:          AddonProviderStrings(opts.Addons),
-			Addons:                  opts.Addons,
-		}
-		if opts.BootstrapProvider != "" {
-			initOpts.BootstrapProviders = []string{opts.BootstrapProvider}
-		}
-		if opts.ControlPlaneProvider != "" {
-			initOpts.ControlPlaneProviders = []string{opts.ControlPlaneProvider}
-		}
+		initOpts := InitOptions{Providers: opts.Providers}
 
 		if err := m.installer.Init(ctx, workloadCluster, initOpts); err != nil {
 			m.cleanupOnError(ctx, bootstrapCluster)

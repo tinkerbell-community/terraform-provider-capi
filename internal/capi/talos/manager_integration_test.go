@@ -77,7 +77,8 @@ func TestManager_UsesTalosBootstrapperForSelfManagedCreate(t *testing.T) {
 	)
 
 	result, err := mgr.CreateCluster(context.Background(), capi.CreateClusterOptions{
-		Name: "prod", Namespace: "default", InfrastructureProvider: "tinkerbell",
+		Name: "prod", Namespace: "default",
+		Providers:         capi.ProviderSet{capi.ProviderTypeInfrastructure: {{Type: capi.ProviderTypeInfrastructure, Name: "tinkerbell"}}},
 		KubernetesVersion: "v1.34.0", SelfManaged: true, WaitForReady: true,
 	})
 	if err != nil {

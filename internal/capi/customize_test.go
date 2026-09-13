@@ -4,10 +4,14 @@
 package capi
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
+	clusterctlclient "sigs.k8s.io/cluster-api/cmd/clusterctl/client"
+	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/config"
 )
 
 func makeDeployment(name string) unstructured.Unstructured {
@@ -331,8 +335,9 @@ func TestMatchesTarget(t *testing.T) {
 func TestBuildComponentsAlterFn_FullPipeline(t *testing.T) {
 	replicas := int64(3)
 	verbosity := int64(5)
-	addon := AddonConfig{
-		Provider: "helm:v0.2.12",
+	addon := ProviderConfig{
+		Name:    "helm",
+		Version: "v0.2.12",
 		Deployment: &DeploymentConfig{
 			Replicas: &replicas,
 		},
@@ -436,32 +441,6 @@ func TestSetArg_ReplaceExisting(t *testing.T) {
 	}
 }
 
-func TestAddonProviderStrings(t *testing.T) {
-	addons := []AddonConfig{
-		{Provider: "helm:v0.2.12"},
-		{Provider: "flux:v0.1.0"},
-	}
-	result := AddonProviderStrings(addons)
-	if len(result) != 2 || result[0] != "helm:v0.2.12" || result[1] != "flux:v0.1.0" {
-		t.Errorf("unexpected result: %v", result)
-	}
-}
-
-func TestCustomizedAddons(t *testing.T) {
-	replicas := int64(3)
-	addons := []AddonConfig{
-		{Provider: "helm:v0.2.12"},
-		{Provider: "flux:v0.1.0", Deployment: &DeploymentConfig{Replicas: &replicas}},
-	}
-	result := CustomizedAddons(addons)
-	if len(result) != 1 {
-		t.Fatalf("expected 1 customized addon, got %d", len(result))
-	}
-	if _, ok := result["flux"]; !ok {
-		t.Error("expected 'flux' in customized addons")
-	}
-}
-
 func TestCustomProcessor_Process(t *testing.T) {
 	proc := newCustomProcessor(
 		map[string]string{"MY_VAR": "custom-value"},
@@ -505,40 +484,21 @@ func TestCustomProcessor_FallsBackToResolver(t *testing.T) {
 	}
 }
 
-func TestParseProviderNameVersion(t *testing.T) {
-	tests := []struct {
-		input       string
-		wantName    string
-		wantVersion string
-	}{
-		{"helm:v0.2.12", "helm", "v0.2.12"},
-		{"helm", "helm", ""},
-		{"my-provider:v1.0.0", "my-provider", "v1.0.0"},
-		{"  helm : v0.2.12 ", "helm", "v0.2.12"},
-	}
-	for _, tt := range tests {
-		name, ver := parseProviderNameVersion(tt.input)
-		if name != tt.wantName || ver != tt.wantVersion {
-			t.Errorf("parseProviderNameVersion(%q) = (%q, %q), want (%q, %q)",
-				tt.input, name, ver, tt.wantName, tt.wantVersion)
-		}
-	}
-}
-
 func TestHasCustomizations(t *testing.T) {
 	tests := []struct {
 		name  string
-		addon AddonConfig
+		addon ProviderConfig
 		want  bool
 	}{
-		{"empty", AddonConfig{Provider: "helm:v0.2.12"}, false},
-		{"config vars", AddonConfig{Provider: "helm", ConfigVariables: map[string]string{"k": "v"}}, true},
-		{"secret vars", AddonConfig{Provider: "helm", SecretConfigVariables: map[string]string{"k": "v"}}, true},
-		{"deployment", AddonConfig{Provider: "helm", Deployment: &DeploymentConfig{}}, true},
-		{"manager", AddonConfig{Provider: "helm", Manager: &ManagerConfig{}}, true},
-		{"additional manifests", AddonConfig{Provider: "helm", AdditionalManifests: "yaml"}, true},
-		{"manifest patches", AddonConfig{Provider: "helm", ManifestPatches: []string{"{}"}}, true},
-		{"patches", AddonConfig{Provider: "helm", Patches: []PatchConfig{{Patch: "{}"}}}, true},
+		{"empty", ProviderConfig{Name: "helm", Version: "v0.2.12"}, false},
+		{"config vars", ProviderConfig{Name: "helm", ConfigVariables: map[string]string{"k": "v"}}, true},
+		{"secret vars", ProviderConfig{Name: "helm", SecretConfigVariables: map[string]string{"k": "v"}}, true},
+		{"deployment", ProviderConfig{Name: "helm", Deployment: &DeploymentConfig{}}, true},
+		{"manager", ProviderConfig{Name: "helm", Manager: &ManagerConfig{}}, true},
+		{"additional manifests", ProviderConfig{Name: "helm", AdditionalManifests: "yaml"}, true},
+		{"manifest patches", ProviderConfig{Name: "helm", ManifestPatches: []string{"{}"}}, true},
+		{"patches", ProviderConfig{Name: "helm", Patches: []PatchConfig{{Patch: "{}"}}}, true},
+		{"fetch config only", ProviderConfig{Name: "helm", FetchConfig: &FetchConfig{Owner: "me"}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -552,7 +512,7 @@ func TestHasCustomizations(t *testing.T) {
 // TestBuildComponentsAlterFn_NoCustomizations verifies that a no-op alter function
 // doesn't modify the input objects.
 func TestBuildComponentsAlterFn_NoCustomizations(t *testing.T) {
-	addon := AddonConfig{Provider: "helm:v0.2.12"}
+	addon := ProviderConfig{Name: "helm", Version: "v0.2.12"}
 	alterFn := BuildComponentsAlterFn(addon)
 	objs := []unstructured.Unstructured{makeDeployment("helm-controller-manager")}
 
@@ -565,5 +525,41 @@ func TestBuildComponentsAlterFn_NoCustomizations(t *testing.T) {
 
 	if string(original) != string(after) {
 		t.Error("expected no modifications when addon has no customizations")
+	}
+}
+
+func TestNewCustomizingRepoFactory_KeysByTypeAndName(t *testing.T) {
+	ctx := context.Background()
+	configClient, err := config.New(ctx, "", config.InjectReader(config.NewMemoryReader()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, five := int64(2), int64(5)
+	customizations := map[ProviderKey]ProviderConfig{
+		{ProviderTypeBootstrap, "talos"}:    {Name: "talos", Type: ProviderTypeBootstrap, Manager: &ManagerConfig{Verbosity: &two}},
+		{ProviderTypeControlPlane, "talos"}: {Name: "talos", Type: ProviderTypeControlPlane, Manager: &ManagerConfig{Verbosity: &five}},
+	}
+	factory := NewCustomizingRepoFactory(configClient, customizations)
+
+	bootstrap := config.NewProvider("talos", "https://github.com/siderolabs/cluster-api-bootstrap-provider-talos/releases/latest/bootstrap-components.yaml", clusterctlv1.BootstrapProviderType)
+	client, err := factory(ctx, clusterctlclient.RepositoryClientFactoryInput{Provider: bootstrap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, ok := client.(*customizingRepoClient)
+	if !ok {
+		t.Fatal("bootstrap talos should be wrapped")
+	}
+	if wrapped.key != (ProviderKey{ProviderTypeBootstrap, "talos"}) {
+		t.Errorf("wrapped key = %+v", wrapped.key)
+	}
+
+	plain := config.NewProvider("kubeadm", "https://github.com/kubernetes-sigs/cluster-api/releases/latest/bootstrap-components.yaml", clusterctlv1.BootstrapProviderType)
+	client, err = factory(ctx, clusterctlclient.RepositoryClientFactoryInput{Provider: plain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := client.(*customizingRepoClient); ok {
+		t.Error("kubeadm has no customizations and must not be wrapped")
 	}
 }

@@ -15,14 +15,14 @@ func TestDefaultCreateOptions(t *testing.T) {
 	if opts.Name != "my-cluster" {
 		t.Errorf("expected name 'my-cluster', got %q", opts.Name)
 	}
-	if opts.InfrastructureProvider != InfrastructureProviderName {
-		t.Errorf("expected provider %q, got %q", InfrastructureProviderName, opts.InfrastructureProvider)
+	if infra, ok := opts.Providers.Infrastructure(); !ok || infra.Name != InfrastructureProviderName {
+		t.Errorf("expected provider %q, got %+v", InfrastructureProviderName, infra)
 	}
-	if opts.BootstrapProvider != BootstrapProviderName {
-		t.Errorf("expected bootstrap %q, got %q", BootstrapProviderName, opts.BootstrapProvider)
+	if got := opts.Providers.InitStrings(capi.ProviderTypeBootstrap); len(got) != 1 || got[0] != BootstrapProviderName {
+		t.Errorf("expected bootstrap %q, got %v", BootstrapProviderName, got)
 	}
-	if opts.ControlPlaneProvider != ControlPlaneProviderName {
-		t.Errorf("expected control plane %q, got %q", ControlPlaneProviderName, opts.ControlPlaneProvider)
+	if got := opts.Providers.InitStrings(capi.ProviderTypeControlPlane); len(got) != 1 || got[0] != ControlPlaneProviderName {
+		t.Errorf("expected control plane %q, got %v", ControlPlaneProviderName, got)
 	}
 	if opts.KubernetesVersion != DefaultKubernetesVersion {
 		t.Errorf("expected k8s version %q, got %q", DefaultKubernetesVersion, opts.KubernetesVersion)
@@ -30,8 +30,8 @@ func TestDefaultCreateOptions(t *testing.T) {
 	if *opts.ControlPlaneMachineCount != DefaultControlPlaneCount {
 		t.Errorf("expected cp count %d, got %d", DefaultControlPlaneCount, *opts.ControlPlaneMachineCount)
 	}
-	if *opts.WorkerMachineCount != DefaultWorkerCount {
-		t.Errorf("expected worker count %d, got %d", DefaultWorkerCount, *opts.WorkerMachineCount)
+	if *opts.WorkerMachineCount() != DefaultWorkerCount {
+		t.Errorf("expected worker count %d, got %d", DefaultWorkerCount, *opts.WorkerMachineCount())
 	}
 	if opts.Namespace != "default" {
 		t.Errorf("expected namespace 'default', got %q", opts.Namespace)

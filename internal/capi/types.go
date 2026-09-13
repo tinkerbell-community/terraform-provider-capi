@@ -5,6 +5,8 @@ package capi
 
 import (
 	"time"
+
+	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
 )
 
 // Cluster represents a Kubernetes cluster with connection information.
@@ -52,25 +54,11 @@ type InitOptions struct {
 	// Kubeconfig is the path to the cluster's kubeconfig.
 	Kubeconfig string
 
-	// CoreProvider is the core provider version (e.g., "cluster-api:v1.7.0").
-	CoreProvider string
-
-	// BootstrapProviders is the list of bootstrap providers to install.
-	BootstrapProviders []string
-
-	// ControlPlaneProviders is the list of control plane providers to install.
-	ControlPlaneProviders []string
-
-	// InfrastructureProviders is the list of infrastructure providers to install.
-	InfrastructureProviders []string
-
-	// AddonProviders is the list of addon providers to install (e.g., "helm:v0.2.12").
-	AddonProviders []string
-
-	// Addons is the full addon configuration list. Addons with customizations
-	// trigger injection of a custom RepositoryClientFactory that applies
-	// capi-operator-style modifications to provider component YAML.
-	Addons []AddonConfig
+	// Providers lists every provider to install, grouped by type. Entries with
+	// a version or fetch config register a URL override with clusterctl;
+	// entries with customizations have their component YAML altered through
+	// the injected repository factory.
+	Providers ProviderSet
 }
 
 // TemplateOptions configures cluster template generation.
@@ -162,26 +150,22 @@ type CreateClusterOptions struct {
 	// Namespace is the target namespace.
 	Namespace string
 
-	// InfrastructureProvider is the infrastructure provider (e.g., "docker").
-	InfrastructureProvider string
-
-	// BootstrapProvider is the bootstrap provider (e.g., "kubeadm").
-	BootstrapProvider string
-
-	// ControlPlaneProvider is the control plane provider (e.g., "kubeadm").
-	ControlPlaneProvider string
-
-	// CoreProvider is the core provider version.
-	CoreProvider string
+	// Providers are the CAPI providers to install, grouped by type. Exactly one
+	// infrastructure provider is required; it also selects the cluster template.
+	Providers ProviderSet
 
 	// KubernetesVersion is the Kubernetes version.
 	KubernetesVersion string
 
-	// ControlPlaneMachineCount is the number of control plane nodes.
+	// ControlPlaneMachineCount is the number of control plane nodes
+	// (Cluster.spec.topology.controlPlane.replicas).
 	ControlPlaneMachineCount *int64
 
-	// WorkerMachineCount is the number of worker nodes.
-	WorkerMachineCount *int64
+	// MachineDeployments are the worker MachineDeployments
+	// (Cluster.spec.topology.workers.machineDeployments). clusterctl flavor
+	// templates expose a single WORKER_MACHINE_COUNT, filled from the first
+	// entry's Replicas; see WorkerMachineCount.
+	MachineDeployments []MachineDeploymentTopology
 
 	// Flavor is the template flavor.
 	Flavor string
@@ -212,11 +196,6 @@ type CreateClusterOptions struct {
 	// KubeconfigOutputPath is where to write the workload cluster kubeconfig.
 	KubeconfigOutputPath string
 
-	// Addons is the list of addon provider configurations.
-	// Simple addons (only Provider set) are installed via clusterctl init.
-	// Rich addons (with customizations) generate AddonProvider CRs for the operator.
-	Addons []AddonConfig
-
 	// ProviderSecrets seeds provider-specific secrets persisted from a prior
 	// apply (see Cluster.ProviderSecrets), so the bootstrapper can recognize a
 	// node it already owns.
@@ -230,56 +209,205 @@ type CreateClusterOptions struct {
 	PreTemplateManifests [][]byte
 }
 
-// AddonConfig carries the full configuration for a CAPI addon provider,
-// modeled after the cluster-api-operator AddonProvider CRD (v1alpha2).
-// Customizations are applied natively by wrapping the clusterctl client's
-// repository factory — the operator itself is not required.
-type AddonConfig struct {
-	// Provider is the addon provider name:version (e.g., "helm:v0.2.12").
-	Provider string
+// WorkerMachineCount returns the replicas of the first MachineDeployment,
+// which is what clusterctl flavor templates consume as WORKER_MACHINE_COUNT.
+// Nil when there are no machine deployments or the first has no replicas.
+func (o CreateClusterOptions) WorkerMachineCount() *int64 {
+	if len(o.MachineDeployments) == 0 {
+		return nil
+	}
+	return o.MachineDeployments[0].Replicas
+}
+
+// MachineDeploymentTopology mirrors Cluster.spec.topology.workers.machineDeployments[].
+type MachineDeploymentTopology struct {
+	Name          string
+	Class         string
+	Replicas      *int64
+	FailureDomain string
+	Labels        map[string]string
+	Annotations   map[string]string
+}
+
+// ProviderType is a CAPI provider category, spelled the way clusterctl names
+// component files (e.g. "control-plane" -> control-plane-components.yaml).
+type ProviderType string
+
+const (
+	ProviderTypeCore           ProviderType = "core"
+	ProviderTypeInfrastructure ProviderType = "infrastructure"
+	ProviderTypeBootstrap      ProviderType = "bootstrap"
+	ProviderTypeControlPlane   ProviderType = "control-plane"
+	ProviderTypeIPAM           ProviderType = "ipam"
+	ProviderTypeAddon          ProviderType = "addon"
+)
+
+// AllProviderTypes returns every ProviderType in clusterctl install order.
+func AllProviderTypes() []ProviderType {
+	return []ProviderType{
+		ProviderTypeCore, ProviderTypeBootstrap, ProviderTypeControlPlane,
+		ProviderTypeInfrastructure, ProviderTypeIPAM, ProviderTypeAddon,
+	}
+}
+
+// ComponentsFile returns the release asset name clusterctl fetches for this type.
+func (t ProviderType) ComponentsFile() string {
+	return string(t) + "-components.yaml"
+}
+
+// Clusterctl maps to the clusterctl API enum.
+func (t ProviderType) Clusterctl() clusterctlv1.ProviderType {
+	switch t {
+	case ProviderTypeCore:
+		return clusterctlv1.CoreProviderType
+	case ProviderTypeInfrastructure:
+		return clusterctlv1.InfrastructureProviderType
+	case ProviderTypeBootstrap:
+		return clusterctlv1.BootstrapProviderType
+	case ProviderTypeControlPlane:
+		return clusterctlv1.ControlPlaneProviderType
+	case ProviderTypeIPAM:
+		return clusterctlv1.IPAMProviderType
+	case ProviderTypeAddon:
+		return clusterctlv1.AddonProviderType
+	}
+	return clusterctlv1.ProviderTypeUnknown
+}
+
+// ProviderTypeFromClusterctl is the inverse of Clusterctl. ok is false for
+// types this provider does not manage (runtime extensions, unknown).
+func ProviderTypeFromClusterctl(t clusterctlv1.ProviderType) (ProviderType, bool) {
+	for _, pt := range AllProviderTypes() {
+		if pt.Clusterctl() == t {
+			return pt, true
+		}
+	}
+	return "", false
+}
+
+// FetchConfig configures where provider components are fetched from.
+// URL and OCI are verbatim clusterctl references. Owner and Repository build
+// a GitHub releases URL together with the provider version; both default from
+// clusterctl's built-in entry for the provider when unset.
+type FetchConfig struct {
+	Owner      string
+	Repository string
+	URL        string
+	OCI        string
+}
+
+// ProviderConfig carries the full configuration for one CAPI provider,
+// modeled after the cluster-api-operator provider CRDs. Customizations are
+// applied natively by wrapping the clusterctl client's repository factory;
+// the operator itself is not required.
+type ProviderConfig struct {
+	// Name is the provider name as clusterctl knows it (e.g. "tinkerbell").
+	Name string
+
+	// Type is the provider category.
+	Type ProviderType
+
+	// Version is the release tag (e.g. "v0.7.9"). Empty means clusterctl's latest.
+	Version string
+
+	// FetchConfig overrides where components are fetched from. Nil uses clusterctl defaults.
+	FetchConfig *FetchConfig
 
 	// ConfigVariables are template variables injected into the provider's
 	// component YAML during processing (${VAR} substitution).
 	ConfigVariables map[string]string
 
 	// SecretConfigVariables are sensitive template variables.
-	// Same mechanism as ConfigVariables, but for secret values.
 	SecretConfigVariables map[string]string
 
-	// FetchConfig configures how provider components are fetched.
-	FetchConfig *FetchConfig
-
-	// Deployment customizes the addon provider controller deployment.
+	// Deployment customizes the provider controller deployment.
 	Deployment *DeploymentConfig
 
-	// Manager configures the addon controller manager.
+	// Manager configures the controller manager.
 	Manager *ManagerConfig
 
-	// AdditionalManifests is inline YAML content of additional manifests
-	// to apply along with the provider components.
+	// AdditionalManifests is inline YAML applied along with the provider components.
 	AdditionalManifests string
 
-	// ManifestPatches are JSON merge patches applied to provider manifests (RFC 7396).
-	// Mutually exclusive with Patches.
+	// ManifestPatches are JSON merge patches (RFC 7396). Mutually exclusive with Patches.
 	ManifestPatches []string
 
-	// Patches are strategic merge or RFC6902 JSON patches with target selectors.
-	// Mutually exclusive with ManifestPatches.
+	// Patches are strategic merge or RFC6902 patches with target selectors.
 	Patches []PatchConfig
 }
 
-// HasCustomizations returns true if the addon has fields beyond the basic provider name:version.
-func (a *AddonConfig) HasCustomizations() bool {
-	return len(a.ConfigVariables) > 0 || len(a.SecretConfigVariables) > 0 ||
-		a.FetchConfig != nil || a.Deployment != nil ||
-		a.Manager != nil || a.AdditionalManifests != "" ||
-		len(a.ManifestPatches) > 0 || len(a.Patches) > 0
+// InitString renders the "name" or "name:version" form clusterctl init expects.
+func (p ProviderConfig) InitString() string {
+	if p.Version == "" {
+		return p.Name
+	}
+	return p.Name + ":" + p.Version
 }
 
-// FetchConfig configures how provider components are fetched.
-type FetchConfig struct {
-	URL string
-	OCI string
+// HasCustomizations reports whether the component YAML must be altered.
+// Version and FetchConfig only affect where components come from.
+func (p ProviderConfig) HasCustomizations() bool {
+	return len(p.ConfigVariables) > 0 || len(p.SecretConfigVariables) > 0 ||
+		p.Deployment != nil || p.Manager != nil || p.AdditionalManifests != "" ||
+		len(p.ManifestPatches) > 0 || len(p.Patches) > 0
+}
+
+// NeedsURLOverride reports whether a clusterctl provider URL must be
+// registered for this entry (a pinned version or any fetch config).
+func (p ProviderConfig) NeedsURLOverride() bool {
+	return p.Version != "" || p.FetchConfig != nil
+}
+
+// ProviderKey identifies a provider by type and name. Bootstrap "talos" and
+// control-plane "talos" are different providers.
+type ProviderKey struct {
+	Type ProviderType
+	Name string
+}
+
+// ProviderSet groups providers by type, preserving insertion order per type.
+type ProviderSet map[ProviderType][]ProviderConfig
+
+// Add appends p under p.Type.
+func (s ProviderSet) Add(p ProviderConfig) {
+	s[p.Type] = append(s[p.Type], p)
+}
+
+// Infrastructure returns the single infrastructure provider, if present.
+func (s ProviderSet) Infrastructure() (ProviderConfig, bool) {
+	if infra := s[ProviderTypeInfrastructure]; len(infra) > 0 {
+		return infra[0], true
+	}
+	return ProviderConfig{}, false
+}
+
+// InitStrings returns the clusterctl init strings for one type.
+func (s ProviderSet) InitStrings(t ProviderType) []string {
+	out := make([]string, 0, len(s[t]))
+	for _, p := range s[t] {
+		out = append(out, p.InitString())
+	}
+	return out
+}
+
+// Customized returns providers whose component YAML must be altered, keyed by type and name.
+func (s ProviderSet) Customized() map[ProviderKey]ProviderConfig {
+	out := map[ProviderKey]ProviderConfig{}
+	for _, p := range s.All() {
+		if p.HasCustomizations() {
+			out[ProviderKey{Type: p.Type, Name: p.Name}] = p
+		}
+	}
+	return out
+}
+
+// All flattens the set in clusterctl install order.
+func (s ProviderSet) All() []ProviderConfig {
+	var out []ProviderConfig
+	for _, t := range AllProviderTypes() {
+		out = append(out, s[t]...)
+	}
+	return out
 }
 
 // DeploymentConfig customizes a provider controller deployment.

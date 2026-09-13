@@ -35,12 +35,10 @@ func TestManager_CreateCluster_FullWorkflow(t *testing.T) {
 	result, err := mgr.CreateCluster(ctx, CreateClusterOptions{
 		Name:                     "test-cluster",
 		Namespace:                "default",
-		InfrastructureProvider:   "docker",
-		BootstrapProvider:        "kubeadm",
-		ControlPlaneProvider:     "kubeadm",
+		Providers:                dockerProviders(),
 		KubernetesVersion:        "v1.31.0",
 		ControlPlaneMachineCount: &cpCount,
-		WorkerMachineCount:       &workerCount,
+		MachineDeployments:       []MachineDeploymentTopology{{Name: "md-0", Replicas: &workerCount}},
 		WaitForReady:             true,
 	})
 	if err != nil {
@@ -59,8 +57,8 @@ func TestManager_CreateCluster_FullWorkflow(t *testing.T) {
 	if len(installer.InitCalls) != 1 {
 		t.Fatalf("expected 1 init call, got %d", len(installer.InitCalls))
 	}
-	if installer.InitCalls[0].Opts.InfrastructureProviders[0] != "docker" {
-		t.Errorf("expected infrastructure provider 'docker', got %q", installer.InitCalls[0].Opts.InfrastructureProviders[0])
+	if got := installer.InitCalls[0].Opts.Providers.InitStrings(ProviderTypeInfrastructure); len(got) != 1 || got[0] != "docker" {
+		t.Errorf("expected infrastructure provider 'docker', got %v", got)
 	}
 
 	// Verify template was generated
@@ -109,10 +107,10 @@ func TestManager_CreateCluster_WithExistingManagement(t *testing.T) {
 
 	ctx := context.Background()
 	result, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "test-cluster",
-		ManagementKubeconfig:   "/tmp/mgmt-kubeconfig",
-		InfrastructureProvider: "docker",
-		WaitForReady:           false,
+		Name:                 "test-cluster",
+		ManagementKubeconfig: "/tmp/mgmt-kubeconfig",
+		Providers:            dockerProviders(),
+		WaitForReady:         false,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -156,11 +154,11 @@ func TestManager_CreateCluster_SkipInit(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "test-cluster",
-		ManagementKubeconfig:   "/tmp/mgmt-kubeconfig",
-		InfrastructureProvider: "docker",
-		SkipInit:               true,
-		WaitForReady:           false,
+		Name:                 "test-cluster",
+		ManagementKubeconfig: "/tmp/mgmt-kubeconfig",
+		Providers:            dockerProviders(),
+		SkipInit:             true,
+		WaitForReady:         false,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -200,8 +198,8 @@ func TestManager_CreateCluster_InitFailure_CleansUpBootstrap(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "test-cluster",
-		InfrastructureProvider: "docker",
+		Name:      "test-cluster",
+		Providers: dockerProviders(),
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -236,8 +234,8 @@ func TestManager_CreateCluster_TemplateFailure_CleansUpBootstrap(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "test-cluster",
-		InfrastructureProvider: "docker",
+		Name:      "test-cluster",
+		Providers: dockerProviders(),
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -269,8 +267,8 @@ func TestManager_CreateCluster_ApplyFailure_CleansUpBootstrap(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "test-cluster",
-		InfrastructureProvider: "docker",
+		Name:      "test-cluster",
+		Providers: dockerProviders(),
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -301,9 +299,9 @@ func TestManager_CreateCluster_WaitFailure_CleansUpBootstrap(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "test-cluster",
-		InfrastructureProvider: "docker",
-		WaitForReady:           true,
+		Name:         "test-cluster",
+		Providers:    dockerProviders(),
+		WaitForReady: true,
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -329,10 +327,10 @@ func TestManager_CreateCluster_DefaultNamespace(t *testing.T) {
 
 	ctx := context.Background()
 	result, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "test-cluster",
-		ManagementKubeconfig:   "/tmp/mgmt-kubeconfig",
-		InfrastructureProvider: "docker",
-		WaitForReady:           false,
+		Name:                 "test-cluster",
+		ManagementKubeconfig: "/tmp/mgmt-kubeconfig",
+		Providers:            dockerProviders(),
+		WaitForReady:         false,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -469,10 +467,10 @@ func TestManager_CreateCluster_SelfManaged(t *testing.T) {
 
 	ctx := context.Background()
 	result, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "self-managed",
-		InfrastructureProvider: "docker",
-		SelfManaged:            true,
-		WaitForReady:           true,
+		Name:         "self-managed",
+		Providers:    dockerProviders(),
+		SelfManaged:  true,
+		WaitForReady: true,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -533,10 +531,10 @@ func TestManager_CreateCluster_SelfManaged_RetriesMoveTransientErrors(t *testing
 
 	ctx := context.Background()
 	_, err := mgr.CreateCluster(ctx, CreateClusterOptions{
-		Name:                   "self-managed-retry",
-		InfrastructureProvider: "docker",
-		SelfManaged:            true,
-		WaitForReady:           true,
+		Name:         "self-managed-retry",
+		Providers:    dockerProviders(),
+		SelfManaged:  true,
+		WaitForReady: true,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -544,5 +542,13 @@ func TestManager_CreateCluster_SelfManaged_RetriesMoveTransientErrors(t *testing
 
 	if moveCalls != 3 {
 		t.Fatalf("expected move to be retried 3 times, got %d", moveCalls)
+	}
+}
+
+func dockerProviders() ProviderSet {
+	return ProviderSet{
+		ProviderTypeInfrastructure: {{Type: ProviderTypeInfrastructure, Name: "docker"}},
+		ProviderTypeBootstrap:      {{Type: ProviderTypeBootstrap, Name: "kubeadm"}},
+		ProviderTypeControlPlane:   {{Type: ProviderTypeControlPlane, Name: "kubeadm"}},
 	}
 }
