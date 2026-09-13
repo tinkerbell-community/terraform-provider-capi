@@ -68,8 +68,12 @@ resource "capi_cluster" "talos" {
   addon = { helm = {} }
 
   topology = {
-    control_plane = { machine_count = 1 }
-    workers       = { machine_count = 0 }
+    control_plane = { replicas = 1 }
+    workers = {
+      machine_deployments = [
+        { name = "md-0", replicas = 2, metadata = { labels = { tier = "worker" } } }
+      ]
+    }
   }
 
   management = { self_managed = true, bootstrap = { ... } }
@@ -150,19 +154,38 @@ at all and is passed to clusterctl as a bare name, exactly as today.
 
 ### `topology`
 
-Replaces `control_plane.machine_count` and top-level `workers`:
+Replaces `control_plane.machine_count` and top-level `workers`, mirroring
+`Cluster.spec.topology` from the CAPI Cluster CRD (field names snake_cased):
 
 ```go
 "topology": schema.SingleNestedAttribute{
     Optional: true,
     Attributes: {
-        "control_plane": SingleNested Optional { "machine_count": Int64 Optional },
-        "workers":       SingleNested Optional { "machine_count": Int64 Optional },
+        "control_plane": SingleNested Optional { "replicas": Int64 Optional },
+        "workers": SingleNested Optional {
+            "machine_deployments": ListNested Optional {
+                "name":           String Required
+                "class":          String Optional   // ClusterClass worker class; unused by flavor templates
+                "replicas":       Int64  Optional
+                "failure_domain": String Optional
+                "metadata":       SingleNested Optional { "labels": Map(String), "annotations": Map(String) }
+            },
+        },
     },
 }
 ```
 
-Both counts stay mutable (no RequiresReplace), as before.
+`replicas` is used instead of `machine_count` so the block reads like the
+CRD. Everything under `topology` stays mutable (no RequiresReplace).
+
+Backend mapping: `CreateClusterOptions.ControlPlaneMachineCount` comes from
+`control_plane.replicas`; `CreateClusterOptions.MachineDeployments`
+(`[]capi.MachineDeploymentTopology{Name, Class, Replicas, FailureDomain,
+Labels, Annotations}`) carries the list. clusterctl flavor templates have a
+single `WORKER_MACHINE_COUNT`, so the manager feeds the **first** machine
+deployment's `replicas` into `TemplateOptions.WorkerMachineCount`; the full
+list is available for ClusterClass-based templating later. Inventory
+validation counts workers as the sum of all machine deployment replicas.
 
 ### Removed
 
@@ -211,10 +234,18 @@ type FetchConfigModel struct {
 }
 
 type TopologyModel struct {
-    ControlPlane types.Object `tfsdk:"control_plane"` // MachineCountModel
-    Workers      types.Object `tfsdk:"workers"`       // MachineCountModel
+    ControlPlane types.Object `tfsdk:"control_plane"` // ControlPlaneTopologyModel
+    Workers      types.Object `tfsdk:"workers"`       // WorkersTopologyModel
 }
-type MachineCountModel struct { MachineCount types.Int64 `tfsdk:"machine_count"` }
+type ControlPlaneTopologyModel struct { Replicas types.Int64 `tfsdk:"replicas"` }
+type WorkersTopologyModel struct { MachineDeployments types.List `tfsdk:"machine_deployments"` } // []MachineDeploymentModel
+type MachineDeploymentModel struct {
+    Name          types.String `tfsdk:"name"`
+    Class         types.String `tfsdk:"class"`
+    Replicas      types.Int64  `tfsdk:"replicas"`
+    FailureDomain types.String `tfsdk:"failure_domain"`
+    Metadata      types.Object `tfsdk:"metadata"` // TopologyMetadataModel {labels, annotations}
+}
 ```
 
 The existing `AddonDeploymentModel`, `AddonManagerModel`, `AddonPatchModel`,
@@ -226,7 +257,8 @@ Helpers:
 - `extractProviders(ctx, m types.Map) (map[string]ProviderModel, diag.Diagnostics)`
 - `buildProviderConfig(ctx, name string, typ capi.ProviderType, pm ProviderModel) (capi.ProviderConfig, diag.Diagnostics)`
   (the body of today's per-addon conversion loop).
-- `extractTopology(ctx, data)` returning the two counts.
+- `extractTopology(ctx, data)` returning the control plane replicas and the
+  machine deployment list.
 
 ## Backend (`internal/capi`)
 
@@ -322,7 +354,8 @@ so bootstrap `talos` and control-plane `talos` get independent settings.
   `url`/`oci`. This check runs in the installer (it needs clusterctl's
   defaults list), so the provider surfaces it as a create error, not a plan
   error. A plan-time approximation is not attempted.
-- Inventory counts now read from `topology`.
+- Inventory counts now read from `topology` (workers = sum of machine
+  deployment replicas). Machine deployment names must be unique.
 
 ## State upgrade v1 → v2
 
@@ -333,7 +366,9 @@ so bootstrap `talos` and control-plane `talos` get independent settings.
 2. For `infrastructure`, `bootstrap`, `control_plane`, `core`: read
    `.provider`, split on `:` into name and version, emit
    `{name: {version: v|null, <all other provider attrs null>}}`. Carry
-   `control_plane.machine_count` and `workers.machine_count` into `topology`.
+   `control_plane.machine_count` into `topology.control_plane.replicas` and
+   `workers.machine_count` into a single machine deployment
+   `{name: "md-0", replicas: N, class/failure_domain/metadata: null}`.
 3. `addons` list: each element becomes an `addon` map entry keyed by the
    parsed name, with `version` from the string and the remaining fields
    copied; `fetch_config` gains null `owner`/`repository`.
