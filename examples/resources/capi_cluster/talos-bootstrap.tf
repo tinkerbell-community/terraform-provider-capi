@@ -6,21 +6,58 @@ resource "capi_cluster" "bare_metal" {
   name               = "bm-cluster"
   kubernetes_version = "v1.34.0"
 
+  # Providers are keyed by name, like the cluster-api-operator Helm values.
+  # fetch_config.owner switches to a fork; repository and the components file
+  # are inferred from clusterctl's built-in entry, and the version is pinned in
+  # the resulting release URL.
+  core = {
+    cluster-api = {
+      manager = {
+        feature_gates = { ClusterTopology = true, MachinePool = true }
+      }
+    }
+  }
+
   infrastructure = {
-    provider = "tinkerbell:v0.5.4"
+    tinkerbell = {
+      version      = "v0.7.9"
+      fetch_config = { owner = "tinkerbell-community" }
+      manager      = { feature_gates = { ClusterTopology = true } }
+    }
   }
 
   bootstrap = {
-    provider = "talos:v0.6.7"
+    talos = {
+      version      = "v0.8.2"
+      fetch_config = { owner = "sidero-community" }
+    }
   }
 
   control_plane = {
-    provider      = "talos:v0.6.7"
-    machine_count = 3
+    talos = {
+      version      = "v0.7.1"
+      fetch_config = { owner = "sidero-community" }
+    }
   }
 
-  workers = {
-    machine_count = 2
+  # Providers clusterctl does not know need the repository name too.
+  ipam = {
+    unifi = {
+      version      = "v0.4.1"
+      fetch_config = { owner = "ubiquiti-community", repository = "cluster-api-ipam-provider-unifi" }
+    }
+  }
+
+  addon = { helm = {} }
+
+  # Mirrors Cluster.spec.topology.
+  topology = {
+    control_plane = { replicas = 3 }
+    workers = {
+      machine_deployments = [
+        { name = "md-0", replicas = 2 }
+      ]
+    }
   }
 
   management = {

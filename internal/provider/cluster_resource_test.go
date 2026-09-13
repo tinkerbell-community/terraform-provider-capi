@@ -25,7 +25,8 @@ func TestAccClusterResource(t *testing.T) {
 				Config: testAccClusterResourceConfig("test-cluster"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("capi_cluster.test", "name", "test-cluster"),
-					resource.TestCheckResourceAttr("capi_cluster.test", "infrastructure.provider", "docker"),
+					resource.TestCheckResourceAttr("capi_cluster.test", "infrastructure.%", "1"),
+					resource.TestCheckResourceAttr("capi_cluster.test", "topology.control_plane.replicas", "1"),
 					resource.TestCheckResourceAttr("capi_cluster.test", "management.skip_init", "false"),
 					resource.TestCheckResourceAttr("capi_cluster.test", "management.self_managed", "false"),
 					resource.TestCheckResourceAttrSet("capi_cluster.test", "id"),
@@ -59,8 +60,13 @@ resource "capi_cluster" "test" {
   flavor             = "development"
   kubernetes_version = "v1.31.0"
 
-  infrastructure = {
-    provider = "docker"
+  infrastructure = { docker = {} }
+
+  topology = {
+    control_plane = { replicas = 1 }
+    workers = {
+      machine_deployments = [{ name = "md-0", replicas = 1 }]
+    }
   }
 
   wait = {
@@ -132,9 +138,13 @@ resource "capi_cluster" "talos" {
   name               = "acc-talos"
   kubernetes_version = "v1.34.0"
 
-  infrastructure = { provider = "tinkerbell:v0.5.4" }
-  bootstrap      = { provider = "talos:v0.6.7" }
-  control_plane  = { provider = "talos:v0.6.7", machine_count = 1 }
+  infrastructure = { tinkerbell = { version = "v0.5.4" } }
+  bootstrap      = { talos = { version = "v0.6.7" } }
+  control_plane  = { talos = { version = "v0.6.7" } }
+
+  topology = {
+    control_plane = { replicas = 1 }
+  }
 
   management = {
     self_managed = true

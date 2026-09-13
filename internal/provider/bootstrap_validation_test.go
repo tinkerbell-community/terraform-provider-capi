@@ -133,7 +133,9 @@ func buildTestBootstrap(ctx context.Context, t *testing.T, typ, machine string, 
 // talosTestData builds a Tinkerbell cluster model with the given bootstrap object and inventory.
 func talosTestData(ctx context.Context, t *testing.T, bootstrap types.Object, machines []testMachine) *ClusterResourceModel {
 	t.Helper()
-	infraVal, _ := types.ObjectValueFrom(ctx, infrastructureAttrTypes(), InfrastructureModel{Provider: types.StringValue("tinkerbell:v0.5.4")})
+	tink := nullProviderModel()
+	tink.Version = types.StringValue("v0.5.4")
+	infraVal := mustProviderMap(t, ctx, map[string]ProviderModel{"tinkerbell": tink})
 	mgmtVal, d := types.ObjectValueFrom(ctx, managementAttrTypes(), ManagementModel{
 		Kubeconfig: types.StringNull(), SkipInit: types.BoolValue(false), SelfManaged: types.BoolValue(true),
 		Namespace: types.StringNull(), Bootstrap: bootstrap,
@@ -151,11 +153,11 @@ func talosTestData(ctx context.Context, t *testing.T, bootstrap types.Object, ma
 		}
 		inv = invVal
 	}
-	return &ClusterResourceModel{
-		Name: types.StringValue("test"), Infrastructure: infraVal, Management: mgmtVal,
-		Bootstrap: types.ObjectNull(bootstrapAttrTypes()), ControlPlane: types.ObjectNull(controlPlaneAttrTypes()),
-		Workers: types.ObjectNull(workersAttrTypes()), Inventory: inv, Addons: types.ListNull(types.ObjectType{AttrTypes: addonAttrTypes()}),
-	}
+	data := baseModel(t, ctx)
+	data.Infrastructure = infraVal
+	data.Management = mgmtVal
+	data.Inventory = inv
+	return data
 }
 
 var goodMachine = []testMachine{{hostname: "cp-1", ip: "10.0.0.5", mac: "aa:bb:cc:dd:ee:01", role: "cp", disk: "/dev/sda", bmc: "10.0.1.5"}}

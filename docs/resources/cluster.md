@@ -17,21 +17,17 @@ resource "capi_cluster" "example" {
   name               = "my-cluster"
   kubernetes_version = "v1.31.0"
 
-  infrastructure = {
-    provider = "docker"
-  }
+  infrastructure = { docker = {} }
+  bootstrap      = { kubeadm = {} }
+  control_plane  = { kubeadm = {} }
 
-  bootstrap = {
-    provider = "kubeadm"
-  }
-
-  control_plane = {
-    provider      = "kubeadm"
-    machine_count = 1
-  }
-
-  workers = {
-    machine_count = 2
+  topology = {
+    control_plane = { replicas = 1 }
+    workers = {
+      machine_deployments = [
+        { name = "md-0", replicas = 2 }
+      ]
+    }
   }
 
   wait = {
@@ -50,22 +46,23 @@ resource "capi_cluster" "example" {
 
 ### Required
 
-- `infrastructure` (Attributes) Infrastructure provider configuration. (see [below for nested schema](#nestedatt--infrastructure))
+- `infrastructure` (Attributes Map) Infrastructure provider, keyed by name (e.g. `docker`, `tinkerbell`). Exactly one entry is required; it also selects the cluster template. Each value is a provider object modeled after the cluster-api-operator provider CRDs (`operator.cluster.x-k8s.io/v1alpha2`); customizations are applied natively by wrapping the clusterctl repository factory, so the operator itself is not required. (see [below for nested schema](#nestedatt--infrastructure))
 - `name` (String) The name of the cluster. Must be a valid DNS-1123 subdomain.
 
 ### Optional
 
-- `addons` (Attributes List) Addon provider configurations modeled after the cluster-api-operator AddonProvider CRD (`operator.cluster.x-k8s.io/v1alpha2`). Each element installs one addon provider via `clusterctl init`. Customizations (deployment, manager, patches) are applied natively by wrapping the clusterctl client's repository factory — the operator itself is not required. (see [below for nested schema](#nestedatt--addons))
-- `bootstrap` (Attributes) Bootstrap provider configuration (e.g., kubeadm, talos). (see [below for nested schema](#nestedatt--bootstrap))
-- `control_plane` (Attributes) Control plane configuration. (see [below for nested schema](#nestedatt--control_plane))
-- `core` (Attributes) Core CAPI provider configuration. (see [below for nested schema](#nestedatt--core))
+- `addon` (Attributes Map) Addon providers, keyed by name (e.g. `helm`). An empty object installs the default release. Each value is a provider object modeled after the cluster-api-operator provider CRDs (`operator.cluster.x-k8s.io/v1alpha2`); customizations are applied natively by wrapping the clusterctl repository factory, so the operator itself is not required. (see [below for nested schema](#nestedatt--addon))
+- `bootstrap` (Attributes Map) Bootstrap providers, keyed by name (e.g. `kubeadm`, `talos`). Each value is a provider object modeled after the cluster-api-operator provider CRDs (`operator.cluster.x-k8s.io/v1alpha2`); customizations are applied natively by wrapping the clusterctl repository factory, so the operator itself is not required. (see [below for nested schema](#nestedatt--bootstrap))
+- `control_plane` (Attributes Map) Control plane providers, keyed by name (e.g. `kubeadm`, `talos`). Each value is a provider object modeled after the cluster-api-operator provider CRDs (`operator.cluster.x-k8s.io/v1alpha2`); customizations are applied natively by wrapping the clusterctl repository factory, so the operator itself is not required. (see [below for nested schema](#nestedatt--control_plane))
+- `core` (Attributes Map) Core CAPI provider, keyed by name (`cluster-api`). Omit to let clusterctl install the default. Each value is a provider object modeled after the cluster-api-operator provider CRDs (`operator.cluster.x-k8s.io/v1alpha2`); customizations are applied natively by wrapping the clusterctl repository factory, so the operator itself is not required. (see [below for nested schema](#nestedatt--core))
 - `flavor` (String) Cluster template flavor to use. Maps to clusterctl template flavors.
 - `inventory` (Attributes) Hardware inventory for bare-metal provisioning. (see [below for nested schema](#nestedatt--inventory))
+- `ipam` (Attributes Map) IPAM providers, keyed by name (e.g. `in-cluster`, `unifi`). Each value is a provider object modeled after the cluster-api-operator provider CRDs (`operator.cluster.x-k8s.io/v1alpha2`); customizations are applied natively by wrapping the clusterctl repository factory, so the operator itself is not required. (see [below for nested schema](#nestedatt--ipam))
 - `kubernetes_version` (String) Kubernetes version for the workload cluster (e.g., `v1.31.0`).
 - `management` (Attributes) Management cluster configuration. Controls how the CAPI lifecycle is managed. (see [below for nested schema](#nestedatt--management))
 - `output` (Attributes) Output configuration. (see [below for nested schema](#nestedatt--output))
+- `topology` (Attributes) Workload cluster topology. Mirrors `Cluster.spec.topology`. (see [below for nested schema](#nestedatt--topology))
 - `wait` (Attributes) Readiness wait configuration. (see [below for nested schema](#nestedatt--wait))
-- `workers` (Attributes) Worker node configuration. (see [below for nested schema](#nestedatt--workers))
 
 ### Read-Only
 
@@ -76,41 +73,30 @@ resource "capi_cluster" "example" {
 <a id="nestedatt--infrastructure"></a>
 ### Nested Schema for `infrastructure`
 
-Required:
-
-- `provider` (String) Infrastructure provider name and optional version (e.g., `docker`, `tinkerbell:v0.5.4`).
-
-
-<a id="nestedatt--addons"></a>
-### Nested Schema for `addons`
-
-Required:
-
-- `provider` (String) Addon provider name and optional version (e.g., `helm:v0.2.12`).
-
 Optional:
 
 - `additional_manifests` (String) Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).
 - `config_variables` (Map of String) Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.
-- `deployment` (Attributes) Deployment customization for the addon provider controller. (see [below for nested schema](#nestedatt--addons--deployment))
-- `fetch_config` (Attributes) Determines how the provider fetches components and metadata. Exactly one of `url` or `oci` must be specified. (see [below for nested schema](#nestedatt--addons--fetch_config))
-- `manager` (Attributes) Controller manager configuration for the addon provider. (see [below for nested schema](#nestedatt--addons--manager))
+- `deployment` (Attributes) Deployment customization for the provider controller. (see [below for nested schema](#nestedatt--infrastructure--deployment))
+- `fetch_config` (Attributes) Where provider components are fetched from. Set `owner` (and `repository` for providers clusterctl does not know) to build `https://github.com/{owner}/{repository}/releases/{version}/{type}-components.yaml`; `url` and `oci` are used verbatim and exclude the other attributes. (see [below for nested schema](#nestedatt--infrastructure--fetch_config))
+- `manager` (Attributes) Controller manager configuration for the provider. (see [below for nested schema](#nestedatt--infrastructure--manager))
 - `manifest_patches` (List of String) JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.
-- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--addons--patches))
+- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--infrastructure--patches))
 - `secret_config_variables` (Map of String, Sensitive) Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.
+- `version` (String) Release tag to install (e.g. `v0.7.9`). Omit for clusterctl's latest release.
 
-<a id="nestedatt--addons--deployment"></a>
-### Nested Schema for `addons.deployment`
+<a id="nestedatt--infrastructure--deployment"></a>
+### Nested Schema for `infrastructure.deployment`
 
 Optional:
 
-- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--addons--deployment--containers))
+- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--infrastructure--deployment--containers))
 - `node_selector` (Map of String) Node selector labels for pod scheduling.
 - `replicas` (Number) Number of desired pods. Defaults to 1.
 - `service_account_name` (String) Service account name for the provider pod.
 
-<a id="nestedatt--addons--deployment--containers"></a>
-### Nested Schema for `addons.deployment.containers`
+<a id="nestedatt--infrastructure--deployment--containers"></a>
+### Nested Schema for `infrastructure.deployment.containers`
 
 Required:
 
@@ -124,17 +110,19 @@ Optional:
 
 
 
-<a id="nestedatt--addons--fetch_config"></a>
-### Nested Schema for `addons.fetch_config`
+<a id="nestedatt--infrastructure--fetch_config"></a>
+### Nested Schema for `infrastructure.fetch_config`
 
 Optional:
 
-- `oci` (String) OCI artifact reference for fetching provider components (e.g., `oci://ghcr.io/org/provider`).
-- `url` (String) URL for fetching provider components from a remote GitHub repository (e.g., `https://github.com/{owner}/{repo}/releases`).
+- `oci` (String) OCI artifact reference (e.g. `oci://ghcr.io/org/provider`).
+- `owner` (String) GitHub owner or organization. Defaults to clusterctl's built-in repository for this provider.
+- `repository` (String) GitHub repository name. Defaults to clusterctl's built-in repository for this provider; required for providers clusterctl does not know.
+- `url` (String) Full clusterctl components URL (e.g. `https://github.com/{owner}/{repo}/releases/v1.0.0/infrastructure-components.yaml`).
 
 
-<a id="nestedatt--addons--manager"></a>
-### Nested Schema for `addons.manager`
+<a id="nestedatt--infrastructure--manager"></a>
+### Nested Schema for `infrastructure.manager`
 
 Optional:
 
@@ -145,16 +133,102 @@ Optional:
 - `verbosity` (Number) Log verbosity level. Defaults to 1.
 
 
-<a id="nestedatt--addons--patches"></a>
-### Nested Schema for `addons.patches`
+<a id="nestedatt--infrastructure--patches"></a>
+### Nested Schema for `infrastructure.patches`
 
 Optional:
 
 - `patch` (String) Inline YAML/JSON patch content.
-- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--addons--patches--target))
+- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--infrastructure--patches--target))
 
-<a id="nestedatt--addons--patches--target"></a>
-### Nested Schema for `addons.patches.target`
+<a id="nestedatt--infrastructure--patches--target"></a>
+### Nested Schema for `infrastructure.patches.target`
+
+Optional:
+
+- `group` (String) API group of the target.
+- `kind` (String) Kind of the target.
+- `label_selector` (String) Label selector expression.
+- `name` (String) Name of the target.
+- `namespace` (String) Namespace of the target.
+- `version` (String) API version of the target.
+
+
+
+
+<a id="nestedatt--addon"></a>
+### Nested Schema for `addon`
+
+Optional:
+
+- `additional_manifests` (String) Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).
+- `config_variables` (Map of String) Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.
+- `deployment` (Attributes) Deployment customization for the provider controller. (see [below for nested schema](#nestedatt--addon--deployment))
+- `fetch_config` (Attributes) Where provider components are fetched from. Set `owner` (and `repository` for providers clusterctl does not know) to build `https://github.com/{owner}/{repository}/releases/{version}/{type}-components.yaml`; `url` and `oci` are used verbatim and exclude the other attributes. (see [below for nested schema](#nestedatt--addon--fetch_config))
+- `manager` (Attributes) Controller manager configuration for the provider. (see [below for nested schema](#nestedatt--addon--manager))
+- `manifest_patches` (List of String) JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.
+- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--addon--patches))
+- `secret_config_variables` (Map of String, Sensitive) Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.
+- `version` (String) Release tag to install (e.g. `v0.7.9`). Omit for clusterctl's latest release.
+
+<a id="nestedatt--addon--deployment"></a>
+### Nested Schema for `addon.deployment`
+
+Optional:
+
+- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--addon--deployment--containers))
+- `node_selector` (Map of String) Node selector labels for pod scheduling.
+- `replicas` (Number) Number of desired pods. Defaults to 1.
+- `service_account_name` (String) Service account name for the provider pod.
+
+<a id="nestedatt--addon--deployment--containers"></a>
+### Nested Schema for `addon.deployment.containers`
+
+Required:
+
+- `name` (String) Container name. Must match an existing container in the deployment.
+
+Optional:
+
+- `args` (Map of String) Extra arguments passed to the container entrypoint. Explicit ManagerSpec values take precedence.
+- `command` (List of String) Override for the container entrypoint command.
+- `image_url` (String) Container image URL override.
+
+
+
+<a id="nestedatt--addon--fetch_config"></a>
+### Nested Schema for `addon.fetch_config`
+
+Optional:
+
+- `oci` (String) OCI artifact reference (e.g. `oci://ghcr.io/org/provider`).
+- `owner` (String) GitHub owner or organization. Defaults to clusterctl's built-in repository for this provider.
+- `repository` (String) GitHub repository name. Defaults to clusterctl's built-in repository for this provider; required for providers clusterctl does not know.
+- `url` (String) Full clusterctl components URL (e.g. `https://github.com/{owner}/{repo}/releases/v1.0.0/infrastructure-components.yaml`).
+
+
+<a id="nestedatt--addon--manager"></a>
+### Nested Schema for `addon.manager`
+
+Optional:
+
+- `additional_args` (Map of String) Additional arguments passed as container args to the controller manager.
+- `feature_gates` (Map of Boolean) Provider-specific feature gates passed as `--feature-gates` to the controller manager.
+- `max_concurrent_reconciles` (Number) Maximum number of concurrent reconciles.
+- `profiler_address` (String) Bind address for the pprof profiler (e.g., `localhost:6060`). Empty disables profiling.
+- `verbosity` (Number) Log verbosity level. Defaults to 1.
+
+
+<a id="nestedatt--addon--patches"></a>
+### Nested Schema for `addon.patches`
+
+Optional:
+
+- `patch` (String) Inline YAML/JSON patch content.
+- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--addon--patches--target))
+
+<a id="nestedatt--addon--patches--target"></a>
+### Nested Schema for `addon.patches.target`
 
 Optional:
 
@@ -171,9 +245,87 @@ Optional:
 <a id="nestedatt--bootstrap"></a>
 ### Nested Schema for `bootstrap`
 
+Optional:
+
+- `additional_manifests` (String) Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).
+- `config_variables` (Map of String) Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.
+- `deployment` (Attributes) Deployment customization for the provider controller. (see [below for nested schema](#nestedatt--bootstrap--deployment))
+- `fetch_config` (Attributes) Where provider components are fetched from. Set `owner` (and `repository` for providers clusterctl does not know) to build `https://github.com/{owner}/{repository}/releases/{version}/{type}-components.yaml`; `url` and `oci` are used verbatim and exclude the other attributes. (see [below for nested schema](#nestedatt--bootstrap--fetch_config))
+- `manager` (Attributes) Controller manager configuration for the provider. (see [below for nested schema](#nestedatt--bootstrap--manager))
+- `manifest_patches` (List of String) JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.
+- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--bootstrap--patches))
+- `secret_config_variables` (Map of String, Sensitive) Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.
+- `version` (String) Release tag to install (e.g. `v0.7.9`). Omit for clusterctl's latest release.
+
+<a id="nestedatt--bootstrap--deployment"></a>
+### Nested Schema for `bootstrap.deployment`
+
+Optional:
+
+- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--bootstrap--deployment--containers))
+- `node_selector` (Map of String) Node selector labels for pod scheduling.
+- `replicas` (Number) Number of desired pods. Defaults to 1.
+- `service_account_name` (String) Service account name for the provider pod.
+
+<a id="nestedatt--bootstrap--deployment--containers"></a>
+### Nested Schema for `bootstrap.deployment.containers`
+
 Required:
 
-- `provider` (String) Bootstrap provider name and optional version (e.g., `kubeadm:v1.12.2`, `talos:v0.6.7`).
+- `name` (String) Container name. Must match an existing container in the deployment.
+
+Optional:
+
+- `args` (Map of String) Extra arguments passed to the container entrypoint. Explicit ManagerSpec values take precedence.
+- `command` (List of String) Override for the container entrypoint command.
+- `image_url` (String) Container image URL override.
+
+
+
+<a id="nestedatt--bootstrap--fetch_config"></a>
+### Nested Schema for `bootstrap.fetch_config`
+
+Optional:
+
+- `oci` (String) OCI artifact reference (e.g. `oci://ghcr.io/org/provider`).
+- `owner` (String) GitHub owner or organization. Defaults to clusterctl's built-in repository for this provider.
+- `repository` (String) GitHub repository name. Defaults to clusterctl's built-in repository for this provider; required for providers clusterctl does not know.
+- `url` (String) Full clusterctl components URL (e.g. `https://github.com/{owner}/{repo}/releases/v1.0.0/infrastructure-components.yaml`).
+
+
+<a id="nestedatt--bootstrap--manager"></a>
+### Nested Schema for `bootstrap.manager`
+
+Optional:
+
+- `additional_args` (Map of String) Additional arguments passed as container args to the controller manager.
+- `feature_gates` (Map of Boolean) Provider-specific feature gates passed as `--feature-gates` to the controller manager.
+- `max_concurrent_reconciles` (Number) Maximum number of concurrent reconciles.
+- `profiler_address` (String) Bind address for the pprof profiler (e.g., `localhost:6060`). Empty disables profiling.
+- `verbosity` (Number) Log verbosity level. Defaults to 1.
+
+
+<a id="nestedatt--bootstrap--patches"></a>
+### Nested Schema for `bootstrap.patches`
+
+Optional:
+
+- `patch` (String) Inline YAML/JSON patch content.
+- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--bootstrap--patches--target))
+
+<a id="nestedatt--bootstrap--patches--target"></a>
+### Nested Schema for `bootstrap.patches.target`
+
+Optional:
+
+- `group` (String) API group of the target.
+- `kind` (String) Kind of the target.
+- `label_selector` (String) Label selector expression.
+- `name` (String) Name of the target.
+- `namespace` (String) Namespace of the target.
+- `version` (String) API version of the target.
+
+
 
 
 <a id="nestedatt--control_plane"></a>
@@ -181,16 +333,171 @@ Required:
 
 Optional:
 
-- `machine_count` (Number) Number of control plane machines.
-- `provider` (String) Control plane provider name and optional version (e.g., `kubeadm:v1.12.2`, `talos:v0.6.7`).
+- `additional_manifests` (String) Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).
+- `config_variables` (Map of String) Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.
+- `deployment` (Attributes) Deployment customization for the provider controller. (see [below for nested schema](#nestedatt--control_plane--deployment))
+- `fetch_config` (Attributes) Where provider components are fetched from. Set `owner` (and `repository` for providers clusterctl does not know) to build `https://github.com/{owner}/{repository}/releases/{version}/{type}-components.yaml`; `url` and `oci` are used verbatim and exclude the other attributes. (see [below for nested schema](#nestedatt--control_plane--fetch_config))
+- `manager` (Attributes) Controller manager configuration for the provider. (see [below for nested schema](#nestedatt--control_plane--manager))
+- `manifest_patches` (List of String) JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.
+- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--control_plane--patches))
+- `secret_config_variables` (Map of String, Sensitive) Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.
+- `version` (String) Release tag to install (e.g. `v0.7.9`). Omit for clusterctl's latest release.
+
+<a id="nestedatt--control_plane--deployment"></a>
+### Nested Schema for `control_plane.deployment`
+
+Optional:
+
+- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--control_plane--deployment--containers))
+- `node_selector` (Map of String) Node selector labels for pod scheduling.
+- `replicas` (Number) Number of desired pods. Defaults to 1.
+- `service_account_name` (String) Service account name for the provider pod.
+
+<a id="nestedatt--control_plane--deployment--containers"></a>
+### Nested Schema for `control_plane.deployment.containers`
+
+Required:
+
+- `name` (String) Container name. Must match an existing container in the deployment.
+
+Optional:
+
+- `args` (Map of String) Extra arguments passed to the container entrypoint. Explicit ManagerSpec values take precedence.
+- `command` (List of String) Override for the container entrypoint command.
+- `image_url` (String) Container image URL override.
+
+
+
+<a id="nestedatt--control_plane--fetch_config"></a>
+### Nested Schema for `control_plane.fetch_config`
+
+Optional:
+
+- `oci` (String) OCI artifact reference (e.g. `oci://ghcr.io/org/provider`).
+- `owner` (String) GitHub owner or organization. Defaults to clusterctl's built-in repository for this provider.
+- `repository` (String) GitHub repository name. Defaults to clusterctl's built-in repository for this provider; required for providers clusterctl does not know.
+- `url` (String) Full clusterctl components URL (e.g. `https://github.com/{owner}/{repo}/releases/v1.0.0/infrastructure-components.yaml`).
+
+
+<a id="nestedatt--control_plane--manager"></a>
+### Nested Schema for `control_plane.manager`
+
+Optional:
+
+- `additional_args` (Map of String) Additional arguments passed as container args to the controller manager.
+- `feature_gates` (Map of Boolean) Provider-specific feature gates passed as `--feature-gates` to the controller manager.
+- `max_concurrent_reconciles` (Number) Maximum number of concurrent reconciles.
+- `profiler_address` (String) Bind address for the pprof profiler (e.g., `localhost:6060`). Empty disables profiling.
+- `verbosity` (Number) Log verbosity level. Defaults to 1.
+
+
+<a id="nestedatt--control_plane--patches"></a>
+### Nested Schema for `control_plane.patches`
+
+Optional:
+
+- `patch` (String) Inline YAML/JSON patch content.
+- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--control_plane--patches--target))
+
+<a id="nestedatt--control_plane--patches--target"></a>
+### Nested Schema for `control_plane.patches.target`
+
+Optional:
+
+- `group` (String) API group of the target.
+- `kind` (String) Kind of the target.
+- `label_selector` (String) Label selector expression.
+- `name` (String) Name of the target.
+- `namespace` (String) Namespace of the target.
+- `version` (String) API version of the target.
+
+
 
 
 <a id="nestedatt--core"></a>
 ### Nested Schema for `core`
 
+Optional:
+
+- `additional_manifests` (String) Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).
+- `config_variables` (Map of String) Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.
+- `deployment` (Attributes) Deployment customization for the provider controller. (see [below for nested schema](#nestedatt--core--deployment))
+- `fetch_config` (Attributes) Where provider components are fetched from. Set `owner` (and `repository` for providers clusterctl does not know) to build `https://github.com/{owner}/{repository}/releases/{version}/{type}-components.yaml`; `url` and `oci` are used verbatim and exclude the other attributes. (see [below for nested schema](#nestedatt--core--fetch_config))
+- `manager` (Attributes) Controller manager configuration for the provider. (see [below for nested schema](#nestedatt--core--manager))
+- `manifest_patches` (List of String) JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.
+- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--core--patches))
+- `secret_config_variables` (Map of String, Sensitive) Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.
+- `version` (String) Release tag to install (e.g. `v0.7.9`). Omit for clusterctl's latest release.
+
+<a id="nestedatt--core--deployment"></a>
+### Nested Schema for `core.deployment`
+
+Optional:
+
+- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--core--deployment--containers))
+- `node_selector` (Map of String) Node selector labels for pod scheduling.
+- `replicas` (Number) Number of desired pods. Defaults to 1.
+- `service_account_name` (String) Service account name for the provider pod.
+
+<a id="nestedatt--core--deployment--containers"></a>
+### Nested Schema for `core.deployment.containers`
+
 Required:
 
-- `provider` (String) Core provider name and version (e.g., `cluster-api:v1.12.2`).
+- `name` (String) Container name. Must match an existing container in the deployment.
+
+Optional:
+
+- `args` (Map of String) Extra arguments passed to the container entrypoint. Explicit ManagerSpec values take precedence.
+- `command` (List of String) Override for the container entrypoint command.
+- `image_url` (String) Container image URL override.
+
+
+
+<a id="nestedatt--core--fetch_config"></a>
+### Nested Schema for `core.fetch_config`
+
+Optional:
+
+- `oci` (String) OCI artifact reference (e.g. `oci://ghcr.io/org/provider`).
+- `owner` (String) GitHub owner or organization. Defaults to clusterctl's built-in repository for this provider.
+- `repository` (String) GitHub repository name. Defaults to clusterctl's built-in repository for this provider; required for providers clusterctl does not know.
+- `url` (String) Full clusterctl components URL (e.g. `https://github.com/{owner}/{repo}/releases/v1.0.0/infrastructure-components.yaml`).
+
+
+<a id="nestedatt--core--manager"></a>
+### Nested Schema for `core.manager`
+
+Optional:
+
+- `additional_args` (Map of String) Additional arguments passed as container args to the controller manager.
+- `feature_gates` (Map of Boolean) Provider-specific feature gates passed as `--feature-gates` to the controller manager.
+- `max_concurrent_reconciles` (Number) Maximum number of concurrent reconciles.
+- `profiler_address` (String) Bind address for the pprof profiler (e.g., `localhost:6060`). Empty disables profiling.
+- `verbosity` (Number) Log verbosity level. Defaults to 1.
+
+
+<a id="nestedatt--core--patches"></a>
+### Nested Schema for `core.patches`
+
+Optional:
+
+- `patch` (String) Inline YAML/JSON patch content.
+- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--core--patches--target))
+
+<a id="nestedatt--core--patches--target"></a>
+### Nested Schema for `core.patches.target`
+
+Optional:
+
+- `group` (String) API group of the target.
+- `kind` (String) Kind of the target.
+- `label_selector` (String) Label selector expression.
+- `name` (String) Name of the target.
+- `namespace` (String) Namespace of the target.
+- `version` (String) API version of the target.
+
+
 
 
 <a id="nestedatt--inventory"></a>
@@ -247,6 +554,92 @@ Required:
 Required:
 
 - `device` (String) Disk device path.
+
+
+
+
+<a id="nestedatt--ipam"></a>
+### Nested Schema for `ipam`
+
+Optional:
+
+- `additional_manifests` (String) Inline YAML content of additional manifests to apply along with the provider components. Supports multi-document YAML (separated by `---`).
+- `config_variables` (Map of String) Template variables injected into the provider's component YAML during processing (`${VAR}` substitution). These take precedence over clusterctl config and environment variables.
+- `deployment` (Attributes) Deployment customization for the provider controller. (see [below for nested schema](#nestedatt--ipam--deployment))
+- `fetch_config` (Attributes) Where provider components are fetched from. Set `owner` (and `repository` for providers clusterctl does not know) to build `https://github.com/{owner}/{repository}/releases/{version}/{type}-components.yaml`; `url` and `oci` are used verbatim and exclude the other attributes. (see [below for nested schema](#nestedatt--ipam--fetch_config))
+- `manager` (Attributes) Controller manager configuration for the provider. (see [below for nested schema](#nestedatt--ipam--manager))
+- `manifest_patches` (List of String) JSON merge patches applied to rendered provider manifests. Each entry is an inline YAML/JSON blob string (RFC 7396). Cannot be used together with `patches`.
+- `patches` (Attributes List) Strategic merge patches or RFC 6902 JSON patches applied to rendered provider manifests. Cannot be used together with `manifest_patches`. (see [below for nested schema](#nestedatt--ipam--patches))
+- `secret_config_variables` (Map of String, Sensitive) Sensitive template variables injected into the provider's component YAML. Same mechanism as `config_variables` but for secret values.
+- `version` (String) Release tag to install (e.g. `v0.7.9`). Omit for clusterctl's latest release.
+
+<a id="nestedatt--ipam--deployment"></a>
+### Nested Schema for `ipam.deployment`
+
+Optional:
+
+- `containers` (Attributes List) Container overrides for the provider deployment. (see [below for nested schema](#nestedatt--ipam--deployment--containers))
+- `node_selector` (Map of String) Node selector labels for pod scheduling.
+- `replicas` (Number) Number of desired pods. Defaults to 1.
+- `service_account_name` (String) Service account name for the provider pod.
+
+<a id="nestedatt--ipam--deployment--containers"></a>
+### Nested Schema for `ipam.deployment.containers`
+
+Required:
+
+- `name` (String) Container name. Must match an existing container in the deployment.
+
+Optional:
+
+- `args` (Map of String) Extra arguments passed to the container entrypoint. Explicit ManagerSpec values take precedence.
+- `command` (List of String) Override for the container entrypoint command.
+- `image_url` (String) Container image URL override.
+
+
+
+<a id="nestedatt--ipam--fetch_config"></a>
+### Nested Schema for `ipam.fetch_config`
+
+Optional:
+
+- `oci` (String) OCI artifact reference (e.g. `oci://ghcr.io/org/provider`).
+- `owner` (String) GitHub owner or organization. Defaults to clusterctl's built-in repository for this provider.
+- `repository` (String) GitHub repository name. Defaults to clusterctl's built-in repository for this provider; required for providers clusterctl does not know.
+- `url` (String) Full clusterctl components URL (e.g. `https://github.com/{owner}/{repo}/releases/v1.0.0/infrastructure-components.yaml`).
+
+
+<a id="nestedatt--ipam--manager"></a>
+### Nested Schema for `ipam.manager`
+
+Optional:
+
+- `additional_args` (Map of String) Additional arguments passed as container args to the controller manager.
+- `feature_gates` (Map of Boolean) Provider-specific feature gates passed as `--feature-gates` to the controller manager.
+- `max_concurrent_reconciles` (Number) Maximum number of concurrent reconciles.
+- `profiler_address` (String) Bind address for the pprof profiler (e.g., `localhost:6060`). Empty disables profiling.
+- `verbosity` (Number) Log verbosity level. Defaults to 1.
+
+
+<a id="nestedatt--ipam--patches"></a>
+### Nested Schema for `ipam.patches`
+
+Optional:
+
+- `patch` (String) Inline YAML/JSON patch content.
+- `target` (Attributes) Target object selector for the patch. (see [below for nested schema](#nestedatt--ipam--patches--target))
+
+<a id="nestedatt--ipam--patches--target"></a>
+### Nested Schema for `ipam.patches.target`
+
+Optional:
+
+- `group` (String) API group of the target.
+- `kind` (String) Kind of the target.
+- `label_selector` (String) Label selector expression.
+- `name` (String) Name of the target.
+- `namespace` (String) Namespace of the target.
+- `version` (String) API version of the target.
 
 
 
@@ -346,6 +739,55 @@ Optional:
 - `kubeconfig_path` (String) File path for the workload cluster kubeconfig.
 
 
+<a id="nestedatt--topology"></a>
+### Nested Schema for `topology`
+
+Optional:
+
+- `control_plane` (Attributes) Control plane topology. (see [below for nested schema](#nestedatt--topology--control_plane))
+- `workers` (Attributes) Worker topology. (see [below for nested schema](#nestedatt--topology--workers))
+
+<a id="nestedatt--topology--control_plane"></a>
+### Nested Schema for `topology.control_plane`
+
+Optional:
+
+- `replicas` (Number) Number of control plane machines. Use an odd number for HA (1, 3, 5).
+
+
+<a id="nestedatt--topology--workers"></a>
+### Nested Schema for `topology.workers`
+
+Optional:
+
+- `machine_deployments` (Attributes List) Worker MachineDeployments, as in `Cluster.spec.topology.workers.machineDeployments`. clusterctl flavor templates expose a single `WORKER_MACHINE_COUNT`, which is taken from the first entry's `replicas`. (see [below for nested schema](#nestedatt--topology--workers--machine_deployments))
+
+<a id="nestedatt--topology--workers--machine_deployments"></a>
+### Nested Schema for `topology.workers.machine_deployments`
+
+Required:
+
+- `name` (String) MachineDeployment name. Must be unique within the cluster.
+
+Optional:
+
+- `class` (String) ClusterClass worker class (`machineDeploymentClass` name). Unused by flavor templates.
+- `failure_domain` (String) Failure domain the machines are placed in.
+- `metadata` (Attributes) Labels and annotations applied to the machines. (see [below for nested schema](#nestedatt--topology--workers--machine_deployments--metadata))
+- `replicas` (Number) Number of machines.
+
+<a id="nestedatt--topology--workers--machine_deployments--metadata"></a>
+### Nested Schema for `topology.workers.machine_deployments.metadata`
+
+Optional:
+
+- `annotations` (Map of String) Machine annotations.
+- `labels` (Map of String) Machine labels.
+
+
+
+
+
 <a id="nestedatt--wait"></a>
 ### Nested Schema for `wait`
 
@@ -353,14 +795,6 @@ Optional:
 
 - `enabled` (Boolean) Wait for readiness.
 - `timeout` (String) Max wait time (Go duration, e.g., `30m`). Default: `30m`.
-
-
-<a id="nestedatt--workers"></a>
-### Nested Schema for `workers`
-
-Optional:
-
-- `machine_count` (Number) Number of worker machines.
 
 
 <a id="nestedatt--status"></a>

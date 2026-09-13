@@ -123,41 +123,35 @@ clusterctl init \
   --addon helm:v0.2.6
 ```
 
-Or in Terraform, add it to the infrastructure provider list — CAPI treats addon
-providers as regular providers during init:
+Or in Terraform, add it to the `addon` provider map — CAPI treats addon
+providers as regular providers during init. Providers are keyed by name, like
+the cluster-api-operator Helm values; `fetch_config.owner` points at a fork and
+the release URL is derived from clusterctl's built-in repository name:
 
 ```hcl
 resource "capi_cluster" "workload" {
   name               = "production"
   kubernetes_version = "v1.31.0"
 
-  infrastructure {
-    provider = "tinkerbell:v0.5.4"
+  infrastructure = { tinkerbell = { version = "v0.5.4" } }
+  bootstrap      = { talos = { version = "v0.6.7" } }
+  control_plane  = { talos = { version = "v0.6.7" } }
+  core           = { cluster-api = { version = "v1.12.2" } }
+  addon          = { helm = { version = "v0.2.6" } }
+
+  topology = {
+    control_plane = { replicas = 3 }
+    workers = {
+      machine_deployments = [{ name = "md-0", replicas = 3 }]
+    }
   }
 
-  bootstrap {
-    provider = "talos:v0.6.7"
-  }
-
-  control_plane {
-    provider      = "talos:v0.6.7"
-    machine_count = 3
-  }
-
-  core {
-    provider = "cluster-api:v1.12.2"
-  }
-
-  management {
-    kubeconfig  = "/tmp/capi-bootstrap.kubeconfig"
+  management = {
+    kubeconfig   = "/tmp/capi-bootstrap.kubeconfig"
     self_managed = true
   }
 
-  workers {
-    machine_count = 3
-  }
-
-  wait {
+  wait = {
     enabled = true
     timeout = "45m"
   }
@@ -280,34 +274,25 @@ resource "capi_cluster" "production" {
   name               = "production"
   kubernetes_version = "v1.31.0"
 
-  infrastructure {
-    provider = "tinkerbell:v0.5.4"
+  infrastructure = { tinkerbell = { version = "v0.5.4" } }
+  bootstrap      = { talos = { version = "v0.6.7" } }
+  control_plane  = { talos = { version = "v0.6.7" } }
+  core           = { cluster-api = { version = "v1.12.2" } }
+
+  topology = {
+    control_plane = { replicas = 3 }
+    workers = {
+      machine_deployments = [{ name = "md-0", replicas = 5 }]
+    }
   }
 
-  bootstrap {
-    provider = "talos:v0.6.7"
-  }
-
-  control_plane {
-    provider      = "talos:v0.6.7"
-    machine_count = 3
-  }
-
-  core {
-    provider = "cluster-api:v1.12.2"
-  }
-
-  workers {
-    machine_count = 5
-  }
-
-  management {
+  management = {
     kubeconfig   = "/tmp/capi-bootstrap.kubeconfig"
     self_managed = true
     namespace    = "default"
   }
 
-  inventory {
+  inventory = {
     machine {
       hostname = "cp-1"
       network {

@@ -6,6 +6,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -56,12 +58,13 @@ type ClusterResourceModel struct {
 	ProviderSecrets types.Dynamic `tfsdk:"provider_secrets"`
 
 	Management     types.Object `tfsdk:"management"`
-	Infrastructure types.Object `tfsdk:"infrastructure"`
-	Bootstrap      types.Object `tfsdk:"bootstrap"`
-	ControlPlane   types.Object `tfsdk:"control_plane"`
-	Core           types.Object `tfsdk:"core"`
-	Workers        types.Object `tfsdk:"workers"`
-	Addons         types.List   `tfsdk:"addons"`
+	Core           types.Map    `tfsdk:"core"`
+	Infrastructure types.Map    `tfsdk:"infrastructure"`
+	Bootstrap      types.Map    `tfsdk:"bootstrap"`
+	ControlPlane   types.Map    `tfsdk:"control_plane"`
+	IPAM           types.Map    `tfsdk:"ipam"`
+	Addon          types.Map    `tfsdk:"addon"`
+	Topology       types.Object `tfsdk:"topology"`
 	Inventory      types.Object `tfsdk:"inventory"`
 	Wait           types.Object `tfsdk:"wait"`
 	Output         types.Object `tfsdk:"output"`
@@ -131,40 +134,15 @@ type HelmReleaseModel struct {
 	Timeout    types.String `tfsdk:"timeout"`
 }
 
-// InfrastructureModel groups attributes for the infrastructure provider.
-type InfrastructureModel struct {
-	Provider types.String `tfsdk:"provider"`
-}
-
-// BootstrapModel groups attributes for the bootstrap provider.
-type BootstrapModel struct {
-	Provider types.String `tfsdk:"provider"`
-}
-
-// ControlPlaneModel groups attributes for control plane configuration.
-type ControlPlaneModel struct {
-	Provider     types.String `tfsdk:"provider"`
-	MachineCount types.Int64  `tfsdk:"machine_count"`
-}
-
-// CoreModel groups attributes for the core CAPI provider.
-type CoreModel struct {
-	Provider types.String `tfsdk:"provider"`
-}
-
-// WorkersModel groups attributes for worker node configuration.
-type WorkersModel struct {
-	MachineCount types.Int64 `tfsdk:"machine_count"`
-}
-
-// AddonModel describes a single CAPI addon provider, modeled after the
-// cluster-api-operator AddonProvider CRD. Customizations are applied natively
-// by wrapping the clusterctl client's repository factory.
-type AddonModel struct {
-	Provider              types.String `tfsdk:"provider"`
+// ProviderModel is the shared nested object of every provider map (core,
+// infrastructure, bootstrap, control_plane, ipam, addon), modeled after the
+// cluster-api-operator provider CRDs. Customizations are applied natively by
+// wrapping the clusterctl client's repository factory.
+type ProviderModel struct {
+	Version               types.String `tfsdk:"version"`
+	FetchConfig           types.Object `tfsdk:"fetch_config"`
 	ConfigVariables       types.Map    `tfsdk:"config_variables"`
 	SecretConfigVariables types.Map    `tfsdk:"secret_config_variables"`
-	FetchConfig           types.Object `tfsdk:"fetch_config"`
 	Deployment            types.Object `tfsdk:"deployment"`
 	Manager               types.Object `tfsdk:"manager"`
 	AdditionalManifests   types.String `tfsdk:"additional_manifests"`
@@ -172,30 +150,32 @@ type AddonModel struct {
 	Patches               types.List   `tfsdk:"patches"`
 }
 
-// AddonFetchConfigModel maps to FetchConfiguration (oci or url).
-type AddonFetchConfigModel struct {
-	URL types.String `tfsdk:"url"`
-	OCI types.String `tfsdk:"oci"`
+// FetchConfigModel controls where provider components are fetched from.
+type FetchConfigModel struct {
+	Owner      types.String `tfsdk:"owner"`
+	Repository types.String `tfsdk:"repository"`
+	URL        types.String `tfsdk:"url"`
+	OCI        types.String `tfsdk:"oci"`
 }
 
-// AddonDeploymentModel maps to the cluster-api-operator DeploymentSpec.
-type AddonDeploymentModel struct {
+// DeploymentModel maps to the cluster-api-operator DeploymentSpec.
+type DeploymentModel struct {
 	Replicas           types.Int64  `tfsdk:"replicas"`
 	NodeSelector       types.Map    `tfsdk:"node_selector"`
 	ServiceAccountName types.String `tfsdk:"service_account_name"`
 	Containers         types.List   `tfsdk:"containers"`
 }
 
-// AddonContainerModel maps to the cluster-api-operator ContainerSpec.
-type AddonContainerModel struct {
+// ContainerModel maps to the cluster-api-operator ContainerSpec.
+type ContainerModel struct {
 	Name     types.String `tfsdk:"name"`
 	ImageURL types.String `tfsdk:"image_url"`
 	Args     types.Map    `tfsdk:"args"`
 	Command  types.List   `tfsdk:"command"`
 }
 
-// AddonManagerModel maps to the cluster-api-operator ManagerSpec.
-type AddonManagerModel struct {
+// ManagerModel maps to the cluster-api-operator ManagerSpec.
+type ManagerModel struct {
 	ProfilerAddress         types.String `tfsdk:"profiler_address"`
 	MaxConcurrentReconciles types.Int64  `tfsdk:"max_concurrent_reconciles"`
 	Verbosity               types.Int64  `tfsdk:"verbosity"`
@@ -203,20 +183,51 @@ type AddonManagerModel struct {
 	AdditionalArgs          types.Map    `tfsdk:"additional_args"`
 }
 
-// AddonPatchModel maps to the cluster-api-operator Patch.
-type AddonPatchModel struct {
+// PatchModel maps to the cluster-api-operator Patch.
+type PatchModel struct {
 	Patch  types.String `tfsdk:"patch"`
 	Target types.Object `tfsdk:"target"`
 }
 
-// AddonPatchSelectorModel maps to the cluster-api-operator PatchSelector.
-type AddonPatchSelectorModel struct {
+// PatchSelectorModel maps to the cluster-api-operator PatchSelector.
+type PatchSelectorModel struct {
 	Group         types.String `tfsdk:"group"`
 	Version       types.String `tfsdk:"version"`
 	Kind          types.String `tfsdk:"kind"`
 	Name          types.String `tfsdk:"name"`
 	Namespace     types.String `tfsdk:"namespace"`
 	LabelSelector types.String `tfsdk:"label_selector"`
+}
+
+// TopologyModel mirrors Cluster.spec.topology.
+type TopologyModel struct {
+	ControlPlane types.Object `tfsdk:"control_plane"` // ControlPlaneTopologyModel
+	Workers      types.Object `tfsdk:"workers"`       // WorkersTopologyModel
+}
+
+// ControlPlaneTopologyModel mirrors Cluster.spec.topology.controlPlane.
+type ControlPlaneTopologyModel struct {
+	Replicas types.Int64 `tfsdk:"replicas"`
+}
+
+// WorkersTopologyModel mirrors Cluster.spec.topology.workers.
+type WorkersTopologyModel struct {
+	MachineDeployments types.List `tfsdk:"machine_deployments"` // []MachineDeploymentModel
+}
+
+// MachineDeploymentModel mirrors Cluster.spec.topology.workers.machineDeployments[].
+type MachineDeploymentModel struct {
+	Name          types.String `tfsdk:"name"`
+	Class         types.String `tfsdk:"class"`
+	Replicas      types.Int64  `tfsdk:"replicas"`
+	FailureDomain types.String `tfsdk:"failure_domain"`
+	Metadata      types.Object `tfsdk:"metadata"` // TopologyMetadataModel
+}
+
+// TopologyMetadataModel holds labels and annotations for topology machines.
+type TopologyMetadataModel struct {
+	Labels      types.Map `tfsdk:"labels"`
+	Annotations types.Map `tfsdk:"annotations"`
 }
 
 // InventoryModel groups attributes for hardware inventory.
@@ -349,68 +360,78 @@ func helmReleaseAttrTypes() map[string]attr.Type {
 	}
 }
 
-func infrastructureAttrTypes() map[string]attr.Type {
+func providerAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
-		"provider": types.StringType,
-	}
-}
-
-func bootstrapAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"provider": types.StringType,
-	}
-}
-
-func controlPlaneAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"provider":      types.StringType,
-		"machine_count": types.Int64Type,
-	}
-}
-
-func coreAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"provider": types.StringType,
-	}
-}
-
-func workersAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"machine_count": types.Int64Type,
-	}
-}
-
-func addonAttrTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"provider":                types.StringType,
+		"version":                 types.StringType,
+		"fetch_config":            types.ObjectType{AttrTypes: fetchConfigAttrTypes()},
 		"config_variables":        types.MapType{ElemType: types.StringType},
 		"secret_config_variables": types.MapType{ElemType: types.StringType},
-		"fetch_config":            types.ObjectType{AttrTypes: addonFetchConfigAttrTypes()},
-		"deployment":              types.ObjectType{AttrTypes: addonDeploymentAttrTypes()},
-		"manager":                 types.ObjectType{AttrTypes: addonManagerAttrTypes()},
+		"deployment":              types.ObjectType{AttrTypes: deploymentAttrTypes()},
+		"manager":                 types.ObjectType{AttrTypes: managerAttrTypes()},
 		"additional_manifests":    types.StringType,
 		"manifest_patches":        types.ListType{ElemType: types.StringType},
-		"patches":                 types.ListType{ElemType: types.ObjectType{AttrTypes: addonPatchAttrTypes()}},
+		"patches":                 types.ListType{ElemType: types.ObjectType{AttrTypes: patchAttrTypes()}},
 	}
 }
 
-func addonFetchConfigAttrTypes() map[string]attr.Type {
+// providerMapType is the Terraform type of every provider map attribute.
+func providerMapType() types.MapType {
+	return types.MapType{ElemType: types.ObjectType{AttrTypes: providerAttrTypes()}}
+}
+
+func fetchConfigAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
-		"url": types.StringType,
-		"oci": types.StringType,
+		"owner":      types.StringType,
+		"repository": types.StringType,
+		"url":        types.StringType,
+		"oci":        types.StringType,
 	}
 }
 
-func addonDeploymentAttrTypes() map[string]attr.Type {
+func topologyAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"control_plane": types.ObjectType{AttrTypes: controlPlaneTopologyAttrTypes()},
+		"workers":       types.ObjectType{AttrTypes: workersTopologyAttrTypes()},
+	}
+}
+
+func controlPlaneTopologyAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{"replicas": types.Int64Type}
+}
+
+func workersTopologyAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"machine_deployments": types.ListType{ElemType: types.ObjectType{AttrTypes: machineDeploymentAttrTypes()}},
+	}
+}
+
+func machineDeploymentAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"name":           types.StringType,
+		"class":          types.StringType,
+		"replicas":       types.Int64Type,
+		"failure_domain": types.StringType,
+		"metadata":       types.ObjectType{AttrTypes: topologyMetadataAttrTypes()},
+	}
+}
+
+func topologyMetadataAttrTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"labels":      types.MapType{ElemType: types.StringType},
+		"annotations": types.MapType{ElemType: types.StringType},
+	}
+}
+
+func deploymentAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"replicas":             types.Int64Type,
 		"node_selector":        types.MapType{ElemType: types.StringType},
 		"service_account_name": types.StringType,
-		"containers":           types.ListType{ElemType: types.ObjectType{AttrTypes: addonContainerAttrTypes()}},
+		"containers":           types.ListType{ElemType: types.ObjectType{AttrTypes: containerAttrTypes()}},
 	}
 }
 
-func addonContainerAttrTypes() map[string]attr.Type {
+func containerAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"name":      types.StringType,
 		"image_url": types.StringType,
@@ -419,7 +440,7 @@ func addonContainerAttrTypes() map[string]attr.Type {
 	}
 }
 
-func addonManagerAttrTypes() map[string]attr.Type {
+func managerAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"profiler_address":          types.StringType,
 		"max_concurrent_reconciles": types.Int64Type,
@@ -429,14 +450,14 @@ func addonManagerAttrTypes() map[string]attr.Type {
 	}
 }
 
-func addonPatchAttrTypes() map[string]attr.Type {
+func patchAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"patch":  types.StringType,
-		"target": types.ObjectType{AttrTypes: addonPatchSelectorAttrTypes()},
+		"target": types.ObjectType{AttrTypes: patchSelectorAttrTypes()},
 	}
 }
 
-func addonPatchSelectorAttrTypes() map[string]attr.Type {
+func patchSelectorAttrTypes() map[string]attr.Type {
 	return map[string]attr.Type{
 		"group":          types.StringType,
 		"version":        types.StringType,
@@ -598,58 +619,179 @@ func stringList(ctx context.Context, l types.List) ([]string, diag.Diagnostics) 
 	return out, diags
 }
 
-func extractInfrastructure(ctx context.Context, data *ClusterResourceModel) (*InfrastructureModel, diag.Diagnostics) {
-	if data.Infrastructure.IsNull() || data.Infrastructure.IsUnknown() {
+// extractProviders decodes a provider map. It returns nil for a null or
+// unknown map so callers can treat "not configured" uniformly.
+func extractProviders(ctx context.Context, m types.Map) (map[string]ProviderModel, diag.Diagnostics) {
+	if m.IsNull() || m.IsUnknown() {
 		return nil, nil
 	}
-	var infra InfrastructureModel
-	diags := data.Infrastructure.As(ctx, &infra, basetypes.ObjectAsOptions{})
-	return &infra, diags
+	out := map[string]ProviderModel{}
+	diags := m.ElementsAs(ctx, &out, false)
+	return out, diags
 }
 
-func extractBootstrap(ctx context.Context, data *ClusterResourceModel) (*BootstrapModel, diag.Diagnostics) {
-	if data.Bootstrap.IsNull() || data.Bootstrap.IsUnknown() {
-		return nil, nil
+// sortedProviderNames returns map keys in a stable order.
+func sortedProviderNames(m map[string]ProviderModel) []string {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
 	}
-	var bs BootstrapModel
-	diags := data.Bootstrap.As(ctx, &bs, basetypes.ObjectAsOptions{})
-	return &bs, diags
+	sort.Strings(names)
+	return names
 }
 
-func extractControlPlane(ctx context.Context, data *ClusterResourceModel) (*ControlPlaneModel, diag.Diagnostics) {
-	if data.ControlPlane.IsNull() || data.ControlPlane.IsUnknown() {
-		return nil, nil
-	}
-	var cp ControlPlaneModel
-	diags := data.ControlPlane.As(ctx, &cp, basetypes.ObjectAsOptions{})
-	return &cp, diags
+// typedProviderMap pairs a provider map attribute with its type.
+type typedProviderMap struct {
+	Type capi.ProviderType
+	Map  types.Map
 }
 
-func extractCore(ctx context.Context, data *ClusterResourceModel) (*CoreModel, diag.Diagnostics) {
-	if data.Core.IsNull() || data.Core.IsUnknown() {
-		return nil, nil
+// providerMaps lists the six provider map attributes in clusterctl install order.
+func (data *ClusterResourceModel) providerMaps() []typedProviderMap {
+	return []typedProviderMap{
+		{capi.ProviderTypeCore, data.Core},
+		{capi.ProviderTypeBootstrap, data.Bootstrap},
+		{capi.ProviderTypeControlPlane, data.ControlPlane},
+		{capi.ProviderTypeInfrastructure, data.Infrastructure},
+		{capi.ProviderTypeIPAM, data.IPAM},
+		{capi.ProviderTypeAddon, data.Addon},
 	}
-	var core CoreModel
-	diags := data.Core.As(ctx, &core, basetypes.ObjectAsOptions{})
-	return &core, diags
 }
 
-func extractWorkers(ctx context.Context, data *ClusterResourceModel) (*WorkersModel, diag.Diagnostics) {
-	if data.Workers.IsNull() || data.Workers.IsUnknown() {
-		return nil, nil
+// extractProviderSet flattens all six maps into a capi.ProviderSet.
+func extractProviderSet(ctx context.Context, data *ClusterResourceModel) (capi.ProviderSet, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	set := capi.ProviderSet{}
+	for _, pm := range data.providerMaps() {
+		entries, d := extractProviders(ctx, pm.Map)
+		diags.Append(d...)
+		for _, name := range sortedProviderNames(entries) {
+			cfg, d := buildProviderConfig(ctx, name, pm.Type, entries[name])
+			diags.Append(d...)
+			set.Add(cfg)
+		}
 	}
-	var w WorkersModel
-	diags := data.Workers.As(ctx, &w, basetypes.ObjectAsOptions{})
-	return &w, diags
+	return set, diags
 }
 
-func extractAddons(ctx context.Context, data *ClusterResourceModel) ([]AddonModel, diag.Diagnostics) {
-	if data.Addons.IsNull() || data.Addons.IsUnknown() {
-		return nil, nil
+// extractTopology returns the control plane replicas and the machine deployments.
+func extractTopology(ctx context.Context, data *ClusterResourceModel) (cp *int64, mds []capi.MachineDeploymentTopology, diags diag.Diagnostics) {
+	if data.Topology.IsNull() || data.Topology.IsUnknown() {
+		return nil, nil, nil
 	}
-	var addons []AddonModel
-	diags := data.Addons.ElementsAs(ctx, &addons, false)
-	return addons, diags
+	var topo TopologyModel
+	diags.Append(data.Topology.As(ctx, &topo, basetypes.ObjectAsOptions{})...)
+	if diags.HasError() {
+		return nil, nil, diags
+	}
+	if !topo.ControlPlane.IsNull() && !topo.ControlPlane.IsUnknown() {
+		var c ControlPlaneTopologyModel
+		diags.Append(topo.ControlPlane.As(ctx, &c, basetypes.ObjectAsOptions{})...)
+		if !c.Replicas.IsNull() && !c.Replicas.IsUnknown() {
+			v := c.Replicas.ValueInt64()
+			cp = &v
+		}
+	}
+	if !topo.Workers.IsNull() && !topo.Workers.IsUnknown() {
+		var w WorkersTopologyModel
+		diags.Append(topo.Workers.As(ctx, &w, basetypes.ObjectAsOptions{})...)
+		if !w.MachineDeployments.IsNull() && !w.MachineDeployments.IsUnknown() {
+			var models []MachineDeploymentModel
+			diags.Append(w.MachineDeployments.ElementsAs(ctx, &models, false)...)
+			for _, m := range models {
+				md := capi.MachineDeploymentTopology{Name: m.Name.ValueString()}
+				if !m.Class.IsNull() {
+					md.Class = m.Class.ValueString()
+				}
+				if !m.Replicas.IsNull() && !m.Replicas.IsUnknown() {
+					v := m.Replicas.ValueInt64()
+					md.Replicas = &v
+				}
+				if !m.FailureDomain.IsNull() {
+					md.FailureDomain = m.FailureDomain.ValueString()
+				}
+				if !m.Metadata.IsNull() && !m.Metadata.IsUnknown() {
+					var meta TopologyMetadataModel
+					diags.Append(m.Metadata.As(ctx, &meta, basetypes.ObjectAsOptions{})...)
+					if !meta.Labels.IsNull() {
+						md.Labels = map[string]string{}
+						diags.Append(meta.Labels.ElementsAs(ctx, &md.Labels, false)...)
+					}
+					if !meta.Annotations.IsNull() {
+						md.Annotations = map[string]string{}
+						diags.Append(meta.Annotations.ElementsAs(ctx, &md.Annotations, false)...)
+					}
+				}
+				mds = append(mds, md)
+			}
+		}
+	}
+	return cp, mds, diags
+}
+
+// legacyTopologyObject builds a topology from the pre-v2 two counts: the
+// worker count becomes one MachineDeployment named "md-0". Used by upgraders.
+func legacyTopologyObject(ctx context.Context, cpCount, workerCount types.Int64) (types.Object, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	cpObj := types.ObjectNull(controlPlaneTopologyAttrTypes())
+	if !cpCount.IsNull() && !cpCount.IsUnknown() {
+		var d diag.Diagnostics
+		cpObj, d = types.ObjectValueFrom(ctx, controlPlaneTopologyAttrTypes(), ControlPlaneTopologyModel{Replicas: cpCount})
+		diags.Append(d...)
+	}
+	wObj := types.ObjectNull(workersTopologyAttrTypes())
+	if !workerCount.IsNull() && !workerCount.IsUnknown() {
+		md := MachineDeploymentModel{
+			Name: types.StringValue("md-0"), Class: types.StringNull(), Replicas: workerCount,
+			FailureDomain: types.StringNull(), Metadata: types.ObjectNull(topologyMetadataAttrTypes()),
+		}
+		list, d := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: machineDeploymentAttrTypes()}, []MachineDeploymentModel{md})
+		diags.Append(d...)
+		wObj, d = types.ObjectValueFrom(ctx, workersTopologyAttrTypes(), WorkersTopologyModel{MachineDeployments: list})
+		diags.Append(d...)
+	}
+	if cpObj.IsNull() && wObj.IsNull() {
+		return types.ObjectNull(topologyAttrTypes()), diags
+	}
+	obj, d := types.ObjectValueFrom(ctx, topologyAttrTypes(), TopologyModel{ControlPlane: cpObj, Workers: wObj})
+	diags.Append(d...)
+	return obj, diags
+}
+
+// splitNameVersion splits "name:version" (version optional).
+func splitNameVersion(s string) (string, string) {
+	parts := strings.SplitN(s, ":", 2)
+	name := strings.TrimSpace(parts[0])
+	if len(parts) == 2 {
+		return name, strings.TrimSpace(parts[1])
+	}
+	return name, ""
+}
+
+// nullProviderModel is a ProviderModel with every attribute null.
+func nullProviderModel() ProviderModel {
+	return ProviderModel{
+		Version:               types.StringNull(),
+		FetchConfig:           types.ObjectNull(fetchConfigAttrTypes()),
+		ConfigVariables:       types.MapNull(types.StringType),
+		SecretConfigVariables: types.MapNull(types.StringType),
+		Deployment:            types.ObjectNull(deploymentAttrTypes()),
+		Manager:               types.ObjectNull(managerAttrTypes()),
+		AdditionalManifests:   types.StringNull(),
+		ManifestPatches:       types.ListNull(types.StringType),
+		Patches:               types.ListNull(types.ObjectType{AttrTypes: patchAttrTypes()}),
+	}
+}
+
+// providerMapValue builds a one-entry provider map from a legacy
+// "name:version" string. Used by the state upgraders.
+func providerMapValue(ctx context.Context, nameVersion string) (types.Map, diag.Diagnostics) {
+	name, version := splitNameVersion(nameVersion)
+	pm := nullProviderModel()
+	if version != "" {
+		pm.Version = types.StringValue(version)
+	}
+	return types.MapValueFrom(ctx, providerMapType().ElemType, map[string]ProviderModel{name: pm})
 }
 
 func extractInventory(ctx context.Context, data *ClusterResourceModel) (*InventoryModel, diag.Diagnostics) {
@@ -813,49 +955,16 @@ func buildCreateOptions(ctx context.Context, data *ClusterResourceModel) (*capi.
 		}
 	}
 
-	// Infrastructure (required)
-	infra, d := extractInfrastructure(ctx, data)
+	// Providers
+	providers, d := extractProviderSet(ctx, data)
 	diags.Append(d...)
-	if infra != nil {
-		opts.InfrastructureProvider = infra.Provider.ValueString()
-	}
+	opts.Providers = providers
 
-	// Bootstrap
-	bs, d := extractBootstrap(ctx, data)
+	// Topology
+	cpCount, mds, d := extractTopology(ctx, data)
 	diags.Append(d...)
-	if bs != nil {
-		opts.BootstrapProvider = bs.Provider.ValueString()
-	}
-
-	// Control Plane
-	cp, d := extractControlPlane(ctx, data)
-	diags.Append(d...)
-	if cp != nil {
-		if !cp.Provider.IsNull() {
-			opts.ControlPlaneProvider = cp.Provider.ValueString()
-		}
-		if !cp.MachineCount.IsNull() {
-			count := cp.MachineCount.ValueInt64()
-			opts.ControlPlaneMachineCount = &count
-		}
-	}
-
-	// Core
-	core, d := extractCore(ctx, data)
-	diags.Append(d...)
-	if core != nil {
-		opts.CoreProvider = core.Provider.ValueString()
-	}
-
-	// Workers
-	w, d := extractWorkers(ctx, data)
-	diags.Append(d...)
-	if w != nil {
-		if !w.MachineCount.IsNull() {
-			count := w.MachineCount.ValueInt64()
-			opts.WorkerMachineCount = &count
-		}
-	}
+	opts.ControlPlaneMachineCount = cpCount
+	opts.MachineDeployments = mds
 
 	// Wait
 	wait, d := extractWait(ctx, data)
@@ -881,162 +990,160 @@ func buildCreateOptions(ctx context.Context, data *ClusterResourceModel) (*capi.
 		opts.KubeconfigOutputPath = out.KubeconfigPath.ValueString()
 	}
 
-	// Addons
-	addons, d := extractAddons(ctx, data)
-	diags.Append(d...)
-	for _, addon := range addons {
-		ac := capi.AddonConfig{}
-		if !addon.Provider.IsNull() {
-			ac.Provider = addon.Provider.ValueString()
-		}
+	return opts, diags
+}
 
-		// ConfigVariables
-		if !addon.ConfigVariables.IsNull() && !addon.ConfigVariables.IsUnknown() {
-			vars := map[string]string{}
-			diags.Append(addon.ConfigVariables.ElementsAs(ctx, &vars, false)...)
-			ac.ConfigVariables = vars
-		}
-
-		// SecretConfigVariables
-		if !addon.SecretConfigVariables.IsNull() && !addon.SecretConfigVariables.IsUnknown() {
-			vars := map[string]string{}
-			diags.Append(addon.SecretConfigVariables.ElementsAs(ctx, &vars, false)...)
-			ac.SecretConfigVariables = vars
-		}
-
-		// FetchConfig
-		if !addon.FetchConfig.IsNull() && !addon.FetchConfig.IsUnknown() {
-			var fc AddonFetchConfigModel
-			diags.Append(addon.FetchConfig.As(ctx, &fc, basetypes.ObjectAsOptions{})...)
-			ac.FetchConfig = &capi.FetchConfig{}
-			if !fc.URL.IsNull() {
-				ac.FetchConfig.URL = fc.URL.ValueString()
-			}
-			if !fc.OCI.IsNull() {
-				ac.FetchConfig.OCI = fc.OCI.ValueString()
-			}
-		}
-
-		// Deployment
-		if !addon.Deployment.IsNull() && !addon.Deployment.IsUnknown() {
-			var dep AddonDeploymentModel
-			diags.Append(addon.Deployment.As(ctx, &dep, basetypes.ObjectAsOptions{})...)
-			ac.Deployment = &capi.DeploymentConfig{}
-			if !dep.Replicas.IsNull() {
-				r := dep.Replicas.ValueInt64()
-				ac.Deployment.Replicas = &r
-			}
-			if !dep.NodeSelector.IsNull() {
-				ns := map[string]string{}
-				diags.Append(dep.NodeSelector.ElementsAs(ctx, &ns, false)...)
-				ac.Deployment.NodeSelector = ns
-			}
-			if !dep.ServiceAccountName.IsNull() {
-				ac.Deployment.ServiceAccountName = dep.ServiceAccountName.ValueString()
-			}
-			if !dep.Containers.IsNull() && !dep.Containers.IsUnknown() {
-				var containers []AddonContainerModel
-				diags.Append(dep.Containers.ElementsAs(ctx, &containers, false)...)
-				for _, c := range containers {
-					cc := capi.ContainerConfig{Name: c.Name.ValueString()}
-					if !c.ImageURL.IsNull() {
-						cc.ImageURL = c.ImageURL.ValueString()
-					}
-					if !c.Args.IsNull() {
-						args := map[string]string{}
-						diags.Append(c.Args.ElementsAs(ctx, &args, false)...)
-						cc.Args = args
-					}
-					if !c.Command.IsNull() {
-						var cmd []string
-						diags.Append(c.Command.ElementsAs(ctx, &cmd, false)...)
-						cc.Command = cmd
-					}
-					ac.Deployment.Containers = append(ac.Deployment.Containers, cc)
-				}
-			}
-		}
-
-		// Manager
-		if !addon.Manager.IsNull() && !addon.Manager.IsUnknown() {
-			var mgr AddonManagerModel
-			diags.Append(addon.Manager.As(ctx, &mgr, basetypes.ObjectAsOptions{})...)
-			ac.Manager = &capi.ManagerConfig{}
-			if !mgr.ProfilerAddress.IsNull() {
-				ac.Manager.ProfilerAddress = mgr.ProfilerAddress.ValueString()
-			}
-			if !mgr.MaxConcurrentReconciles.IsNull() {
-				v := mgr.MaxConcurrentReconciles.ValueInt64()
-				ac.Manager.MaxConcurrentReconciles = &v
-			}
-			if !mgr.Verbosity.IsNull() {
-				v := mgr.Verbosity.ValueInt64()
-				ac.Manager.Verbosity = &v
-			}
-			if !mgr.FeatureGates.IsNull() {
-				gates := map[string]bool{}
-				diags.Append(mgr.FeatureGates.ElementsAs(ctx, &gates, false)...)
-				ac.Manager.FeatureGates = gates
-			}
-			if !mgr.AdditionalArgs.IsNull() {
-				args := map[string]string{}
-				diags.Append(mgr.AdditionalArgs.ElementsAs(ctx, &args, false)...)
-				ac.Manager.AdditionalArgs = args
-			}
-		}
-
-		// AdditionalManifests
-		if !addon.AdditionalManifests.IsNull() && !addon.AdditionalManifests.IsUnknown() {
-			ac.AdditionalManifests = addon.AdditionalManifests.ValueString()
-		}
-
-		// ManifestPatches
-		if !addon.ManifestPatches.IsNull() && !addon.ManifestPatches.IsUnknown() {
-			var patches []string
-			diags.Append(addon.ManifestPatches.ElementsAs(ctx, &patches, false)...)
-			ac.ManifestPatches = patches
-		}
-
-		// Patches
-		if !addon.Patches.IsNull() && !addon.Patches.IsUnknown() {
-			var patchModels []AddonPatchModel
-			diags.Append(addon.Patches.ElementsAs(ctx, &patchModels, false)...)
-			for _, pm := range patchModels {
-				pc := capi.PatchConfig{}
-				if !pm.Patch.IsNull() {
-					pc.Patch = pm.Patch.ValueString()
-				}
-				if !pm.Target.IsNull() && !pm.Target.IsUnknown() {
-					var sel AddonPatchSelectorModel
-					diags.Append(pm.Target.As(ctx, &sel, basetypes.ObjectAsOptions{})...)
-					pc.Target = &capi.PatchSelector{}
-					if !sel.Group.IsNull() {
-						pc.Target.Group = sel.Group.ValueString()
-					}
-					if !sel.Version.IsNull() {
-						pc.Target.Version = sel.Version.ValueString()
-					}
-					if !sel.Kind.IsNull() {
-						pc.Target.Kind = sel.Kind.ValueString()
-					}
-					if !sel.Name.IsNull() {
-						pc.Target.Name = sel.Name.ValueString()
-					}
-					if !sel.Namespace.IsNull() {
-						pc.Target.Namespace = sel.Namespace.ValueString()
-					}
-					if !sel.LabelSelector.IsNull() {
-						pc.Target.LabelSelector = sel.LabelSelector.ValueString()
-					}
-				}
-				ac.Patches = append(ac.Patches, pc)
-			}
-		}
-
-		opts.Addons = append(opts.Addons, ac)
+// buildProviderConfig converts one provider map entry into a capi.ProviderConfig.
+func buildProviderConfig(ctx context.Context, name string, typ capi.ProviderType, pm ProviderModel) (capi.ProviderConfig, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	ac := capi.ProviderConfig{Name: name, Type: typ}
+	if !pm.Version.IsNull() && !pm.Version.IsUnknown() {
+		ac.Version = pm.Version.ValueString()
 	}
 
-	return opts, diags
+	// ConfigVariables
+	if !pm.ConfigVariables.IsNull() && !pm.ConfigVariables.IsUnknown() {
+		vars := map[string]string{}
+		diags.Append(pm.ConfigVariables.ElementsAs(ctx, &vars, false)...)
+		ac.ConfigVariables = vars
+	}
+
+	// SecretConfigVariables
+	if !pm.SecretConfigVariables.IsNull() && !pm.SecretConfigVariables.IsUnknown() {
+		vars := map[string]string{}
+		diags.Append(pm.SecretConfigVariables.ElementsAs(ctx, &vars, false)...)
+		ac.SecretConfigVariables = vars
+	}
+
+	// FetchConfig
+	if !pm.FetchConfig.IsNull() && !pm.FetchConfig.IsUnknown() {
+		var fc FetchConfigModel
+		diags.Append(pm.FetchConfig.As(ctx, &fc, basetypes.ObjectAsOptions{})...)
+		ac.FetchConfig = &capi.FetchConfig{
+			Owner:      fc.Owner.ValueString(),
+			Repository: fc.Repository.ValueString(),
+			URL:        fc.URL.ValueString(),
+			OCI:        fc.OCI.ValueString(),
+		}
+	}
+
+	// Deployment
+	if !pm.Deployment.IsNull() && !pm.Deployment.IsUnknown() {
+		var dep DeploymentModel
+		diags.Append(pm.Deployment.As(ctx, &dep, basetypes.ObjectAsOptions{})...)
+		ac.Deployment = &capi.DeploymentConfig{}
+		if !dep.Replicas.IsNull() {
+			r := dep.Replicas.ValueInt64()
+			ac.Deployment.Replicas = &r
+		}
+		if !dep.NodeSelector.IsNull() {
+			ns := map[string]string{}
+			diags.Append(dep.NodeSelector.ElementsAs(ctx, &ns, false)...)
+			ac.Deployment.NodeSelector = ns
+		}
+		if !dep.ServiceAccountName.IsNull() {
+			ac.Deployment.ServiceAccountName = dep.ServiceAccountName.ValueString()
+		}
+		if !dep.Containers.IsNull() && !dep.Containers.IsUnknown() {
+			var containers []ContainerModel
+			diags.Append(dep.Containers.ElementsAs(ctx, &containers, false)...)
+			for _, c := range containers {
+				cc := capi.ContainerConfig{Name: c.Name.ValueString()}
+				if !c.ImageURL.IsNull() {
+					cc.ImageURL = c.ImageURL.ValueString()
+				}
+				if !c.Args.IsNull() {
+					args := map[string]string{}
+					diags.Append(c.Args.ElementsAs(ctx, &args, false)...)
+					cc.Args = args
+				}
+				if !c.Command.IsNull() {
+					var cmd []string
+					diags.Append(c.Command.ElementsAs(ctx, &cmd, false)...)
+					cc.Command = cmd
+				}
+				ac.Deployment.Containers = append(ac.Deployment.Containers, cc)
+			}
+		}
+	}
+
+	// Manager
+	if !pm.Manager.IsNull() && !pm.Manager.IsUnknown() {
+		var mgr ManagerModel
+		diags.Append(pm.Manager.As(ctx, &mgr, basetypes.ObjectAsOptions{})...)
+		ac.Manager = &capi.ManagerConfig{}
+		if !mgr.ProfilerAddress.IsNull() {
+			ac.Manager.ProfilerAddress = mgr.ProfilerAddress.ValueString()
+		}
+		if !mgr.MaxConcurrentReconciles.IsNull() {
+			v := mgr.MaxConcurrentReconciles.ValueInt64()
+			ac.Manager.MaxConcurrentReconciles = &v
+		}
+		if !mgr.Verbosity.IsNull() {
+			v := mgr.Verbosity.ValueInt64()
+			ac.Manager.Verbosity = &v
+		}
+		if !mgr.FeatureGates.IsNull() {
+			gates := map[string]bool{}
+			diags.Append(mgr.FeatureGates.ElementsAs(ctx, &gates, false)...)
+			ac.Manager.FeatureGates = gates
+		}
+		if !mgr.AdditionalArgs.IsNull() {
+			args := map[string]string{}
+			diags.Append(mgr.AdditionalArgs.ElementsAs(ctx, &args, false)...)
+			ac.Manager.AdditionalArgs = args
+		}
+	}
+
+	// AdditionalManifests
+	if !pm.AdditionalManifests.IsNull() && !pm.AdditionalManifests.IsUnknown() {
+		ac.AdditionalManifests = pm.AdditionalManifests.ValueString()
+	}
+
+	// ManifestPatches
+	if !pm.ManifestPatches.IsNull() && !pm.ManifestPatches.IsUnknown() {
+		var patches []string
+		diags.Append(pm.ManifestPatches.ElementsAs(ctx, &patches, false)...)
+		ac.ManifestPatches = patches
+	}
+
+	// Patches
+	if !pm.Patches.IsNull() && !pm.Patches.IsUnknown() {
+		var patchModels []PatchModel
+		diags.Append(pm.Patches.ElementsAs(ctx, &patchModels, false)...)
+		for _, pm := range patchModels {
+			pc := capi.PatchConfig{}
+			if !pm.Patch.IsNull() {
+				pc.Patch = pm.Patch.ValueString()
+			}
+			if !pm.Target.IsNull() && !pm.Target.IsUnknown() {
+				var sel PatchSelectorModel
+				diags.Append(pm.Target.As(ctx, &sel, basetypes.ObjectAsOptions{})...)
+				pc.Target = &capi.PatchSelector{}
+				if !sel.Group.IsNull() {
+					pc.Target.Group = sel.Group.ValueString()
+				}
+				if !sel.Version.IsNull() {
+					pc.Target.Version = sel.Version.ValueString()
+				}
+				if !sel.Kind.IsNull() {
+					pc.Target.Kind = sel.Kind.ValueString()
+				}
+				if !sel.Name.IsNull() {
+					pc.Target.Name = sel.Name.ValueString()
+				}
+				if !sel.Namespace.IsNull() {
+					pc.Target.Namespace = sel.Namespace.ValueString()
+				}
+				if !sel.LabelSelector.IsNull() {
+					pc.Target.LabelSelector = sel.LabelSelector.ValueString()
+				}
+			}
+			ac.Patches = append(ac.Patches, pc)
+		}
+	}
+
+	return ac, diags
 }
 
 // --- Inventory Validation ---
@@ -1118,51 +1225,37 @@ func validateInventory(ctx context.Context, inv *InventoryModel, cpCount, worker
 	}
 }
 
-// --- Addon Validation ---
+// --- Provider Validation ---
 
-func validateAddons(ctx context.Context, data *ClusterResourceModel, diags *diag.Diagnostics) {
-	addons, d := extractAddons(ctx, data)
-	diags.Append(d...)
-	if diags.HasError() {
-		return
-	}
+// validateProviderEntry checks the static rules of one provider map entry.
+func validateProviderEntry(ctx context.Context, typ capi.ProviderType, name string, pm ProviderModel, diags *diag.Diagnostics) {
+	where := fmt.Sprintf("%s[%q]", providerAttrName(typ), name)
 
-	for i, addon := range addons {
-		providerName := addon.Provider.ValueString()
-
-		// manifest_patches and patches are mutually exclusive (operator CRD constraint)
-		hasManifestPatches := !addon.ManifestPatches.IsNull() && !addon.ManifestPatches.IsUnknown()
-		hasPatches := !addon.Patches.IsNull() && !addon.Patches.IsUnknown()
-		if hasManifestPatches && hasPatches {
-			var mp []string
-			diags.Append(addon.ManifestPatches.ElementsAs(ctx, &mp, false)...)
-			var p []AddonPatchModel
-			diags.Append(addon.Patches.ElementsAs(ctx, &p, false)...)
-			if len(mp) > 0 && len(p) > 0 {
-				diags.AddError(
-					"Invalid addon configuration",
-					fmt.Sprintf("Addon %q (index %d): manifest_patches and patches are mutually exclusive. Use one or the other.", providerName, i),
-				)
-			}
-		}
-
-		// fetch_config: at most one of url or oci
-		if !addon.FetchConfig.IsNull() && !addon.FetchConfig.IsUnknown() {
-			var fc AddonFetchConfigModel
-			diags.Append(addon.FetchConfig.As(ctx, &fc, basetypes.ObjectAsOptions{})...)
-			sources := 0
-			if !fc.URL.IsNull() && fc.URL.ValueString() != "" {
-				sources++
-			}
-			if !fc.OCI.IsNull() && fc.OCI.ValueString() != "" {
-				sources++
-			}
-			if sources > 1 {
-				diags.AddError(
-					"Invalid addon fetch configuration",
-					fmt.Sprintf("Addon %q (index %d): fetch_config must specify at most one of url or oci.", providerName, i),
-				)
-			}
+	if !pm.FetchConfig.IsNull() && !pm.FetchConfig.IsUnknown() {
+		var fc FetchConfigModel
+		diags.Append(pm.FetchConfig.As(ctx, &fc, basetypes.ObjectAsOptions{})...)
+		set := func(s types.String) bool { return !s.IsNull() && !s.IsUnknown() && s.ValueString() != "" }
+		hasURL, hasOCI := set(fc.URL), set(fc.OCI)
+		hasRepoParts := set(fc.Owner) || set(fc.Repository)
+		switch {
+		case hasURL && hasOCI:
+			diags.AddError("Invalid fetch_config", where+".fetch_config: url and oci are mutually exclusive.")
+		case (hasURL || hasOCI) && hasRepoParts:
+			diags.AddError("Invalid fetch_config", where+".fetch_config: owner/repository cannot be combined with url or oci.")
 		}
 	}
+
+	hasManifestPatches := !pm.ManifestPatches.IsNull() && !pm.ManifestPatches.IsUnknown() && len(pm.ManifestPatches.Elements()) > 0
+	hasPatches := !pm.Patches.IsNull() && !pm.Patches.IsUnknown() && len(pm.Patches.Elements()) > 0
+	if hasManifestPatches && hasPatches {
+		diags.AddError("Invalid provider patches", where+": manifest_patches and patches cannot be used together.")
+	}
+}
+
+// providerAttrName maps a provider type to its schema attribute name.
+func providerAttrName(typ capi.ProviderType) string {
+	if typ == capi.ProviderTypeControlPlane {
+		return "control_plane"
+	}
+	return string(typ)
 }
